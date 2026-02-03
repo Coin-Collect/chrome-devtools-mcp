@@ -59,3 +59,50 @@ export const createWorkflow = defineTool({
         );
     },
 });
+
+export const listWorkflows = defineTool({
+    name: 'list_workflows',
+    description: 'Lists all workflows and their steps from the database',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: true,
+    },
+    schema: {},
+    handler: async (_request, response) => {
+        const { data, error } = await supabase
+            .from('workflows')
+            .select(`
+                *,
+                workflow_steps (*)
+            `)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            throw new Error(`Failed to list workflows: ${error.message}`);
+        }
+
+        if (!data || data.length === 0) {
+            response.appendResponseLine('No workflows found in the database.');
+            return;
+        }
+
+        for (const workflow of data) {
+            response.appendResponseLine(`Workflow: ${workflow.title} (ID: ${workflow.id})`);
+            response.appendResponseLine(`  Status: ${workflow.status}`);
+            if (workflow.website_url) response.appendResponseLine(`  URL: ${workflow.website_url}`);
+            if (workflow.description) response.appendResponseLine(`  Description: ${workflow.description}`);
+            if (workflow.success_criteria) response.appendResponseLine(`  Success Criteria: ${workflow.success_criteria}`);
+
+            if (workflow.workflow_steps && workflow.workflow_steps.length > 0) {
+                response.appendResponseLine('  Steps:');
+                const sortedSteps = workflow.workflow_steps.sort((a: any, b: any) => a.step_order - b.step_order);
+                for (const step of sortedSteps) {
+                    response.appendResponseLine(`    ${step.step_order}. ${step.action}: ${step.description || ''} (${step.action_value || ''})`);
+                }
+            } else {
+                response.appendResponseLine('  No steps defined for this workflow.');
+            }
+            response.appendResponseLine('---');
+        }
+    },
+});
