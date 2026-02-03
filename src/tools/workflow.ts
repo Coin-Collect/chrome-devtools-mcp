@@ -389,3 +389,326 @@ export const addWorkflowStep = defineTool({
         void handle.dispose();
     },
 });
+
+// Human-like timing utilities
+function gaussianRandom(mean: number, stdDev: number): number {
+    const u1 = Math.random();
+    const u2 = Math.random();
+    const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+    return z0 * stdDev + mean;
+}
+
+function humanDelay(baseMs: number, variance = 0.3): number {
+    const min = baseMs * (1 - variance);
+    const max = baseMs * (1 + variance);
+    return Math.floor(gaussianRandom((min + max) / 2, (max - min) / 6));
+}
+
+function getThinkingDelay(): number {
+    // Human "thinking" pause before action: 150-600ms
+    return humanDelay(350, 0.5);
+}
+
+function getPostActionDelay(): number {
+    // Pause after action to observe result: 200-800ms
+    return humanDelay(450, 0.4);
+}
+
+function getTypingDelay(): number {
+    // Delay between characters: 30-150ms (average 70ms)
+    return humanDelay(70, 0.6);
+}
+
+function getMicroPause(): number {
+    // Occasional micro-pause during typing: 100-300ms
+    return Math.random() > 0.85 ? humanDelay(180, 0.5) : 0;
+}
+
+async function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+}
+
+interface WorkflowStep {
+    id: number;
+    step_order: number;
+    action: string;
+    action_value: string | null;
+    description: string | null;
+    selectors: SelectorsData | null;
+}
+
+async function findElementByStrategies(
+    page: { $: (selector: string) => Promise<unknown>; $x?: (xpath: string) => Promise<unknown[]> },
+    strategies: SelectorStrategy[],
+): Promise<{ element: unknown; usedStrategy: SelectorStrategy } | null> {
+    for (const strategy of strategies) {
+        try {
+            let element: unknown = null;
+
+            if (strategy.type === 'xpath' || strategy.type === 'text') {
+                // XPath selectors
+                if (page.$x) {
+                    const elements = await page.$x(strategy.value);
+                    if (elements && elements.length > 0) {
+                        element = elements[0];
+                    }
+                }
+            } else {
+                // CSS selectors
+                element = await page.$(strategy.value);
+            }
+
+            if (element) {
+                return { element, usedStrategy: strategy };
+            }
+        } catch {
+            // Strategy failed, try next
+            continue;
+        }
+    }
+    return null;
+}
+
+async function typeHumanLike(
+    page: { keyboard: { type: (char: string) => Promise<void> } },
+    text: string,
+): Promise<void> {
+    for (const char of text) {
+        await sleep(getTypingDelay());
+        await page.keyboard.type(char);
+        await sleep(getMicroPause());
+    }
+}
+
+export const runWorkflow = defineTool({
+    name: 'run_workflow',
+    description: 'Runs a workflow or a specific step. Executes actions with human-like timing and robust selector fallbacks.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        workflow_id: zod.number().describe('The ID of the workflow to run'),
+        step_order: zod.number().optional().describe('If provided, only this specific step will be executed'),
+    },
+    handler: async (request, response, context) => {
+        const { workflow_id, step_order } = request.params;
+
+        // Fetch workflow and steps
+        let query = supabase
+            .from('workflow_steps')
+            .select('*')
+            .eq('workflow_id', workflow_id)
+            .order('step_order', { ascending: true });
+
+        if (step_order !== undefined) {
+            query = query.eq('step_order', step_order);
+        }
+
+        const { data: steps, error } = await query;
+
+        if (error) {
+            throw new Error(`Failed to fetch workflow steps: ${error.message}`);
+        }
+
+        if (!steps || steps.length === 0) {
+            response.appendResponseLine(
+                step_order !== undefined
+                    ? `No step found with order ${step_order} in workflow ${workflow_id}`
+                    : `No steps found for workflow ${workflow_id}`,
+            );
+            return;
+        }
+
+        const page = context.getSelectedPage();
+        const executionResults: Array<{ step: number; action: string; success: boolean; details: string }> = [];
+
+        for (const step of steps as WorkflowStep[]) {
+            response.appendResponseLine(`\n▶ Executing step ${step.step_order}: ${step.action}`);
+            if (step.description) {
+                response.appendResponseLine(`  Description: ${step.description}`);
+            }
+
+            // Human-like thinking pause before action
+            await sleep(getThinkingDelay());
+
+            try {
+                switch (step.action) {
+                    case 'click': {
+                        if (!step.selectors?.strategies) {
+                            throw new Error('No selectors available for click action');
+                        }
+
+                        const result = await findElementByStrategies(
+                            page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            step.selectors.strategies,
+                        );
+
+                        if (!result) {
+                            throw new Error('Element not found with any selector strategy');
+                        }
+
+                        response.appendResponseLine(`  Using selector: ${result.usedStrategy.type} = "${result.usedStrategy.value}"`);
+
+                        // Move to element naturally, then click
+                        const elementHandle = result.element as { click: () => Promise<void>; hover: () => Promise<void> };
+                        await elementHandle.hover();
+                        await sleep(humanDelay(120, 0.3)); // Brief pause before click
+                        await elementHandle.click();
+
+                        executionResults.push({ step: step.step_order, action: 'click', success: true, details: `Clicked using ${result.usedStrategy.type}` });
+                        break;
+                    }
+
+                    case 'type': {
+                        if (!step.action_value) {
+                            throw new Error('No text value provided for type action');
+                        }
+
+                        if (step.selectors?.strategies) {
+                            const result = await findElementByStrategies(
+                                page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                                step.selectors.strategies,
+                            );
+
+                            if (result) {
+                                const elementHandle = result.element as { click: () => Promise<void>; focus?: () => Promise<void> };
+                                await elementHandle.click(); // Focus by clicking
+                                await sleep(humanDelay(150, 0.3));
+                            }
+                        }
+
+                        // Type with human-like rhythm
+                        await typeHumanLike(
+                            page as unknown as { keyboard: { type: (char: string) => Promise<void> } },
+                            step.action_value,
+                        );
+
+                        executionResults.push({ step: step.step_order, action: 'type', success: true, details: `Typed "${step.action_value.substring(0, 20)}..."` });
+                        break;
+                    }
+
+                    case 'wait': {
+                        const waitTime = step.action_value ? parseInt(step.action_value, 10) : 1000;
+                        // Add human variance to wait time
+                        const actualWait = humanDelay(waitTime, 0.15);
+                        response.appendResponseLine(`  Waiting ${actualWait}ms`);
+                        await sleep(actualWait);
+
+                        executionResults.push({ step: step.step_order, action: 'wait', success: true, details: `Waited ${actualWait}ms` });
+                        break;
+                    }
+
+                    case 'scroll': {
+                        const scrollAmount = step.action_value ? parseInt(step.action_value, 10) : 300;
+                        // Smooth scroll with increments
+                        const scrollSteps = Math.ceil(Math.abs(scrollAmount) / 100);
+                        const scrollIncrement = scrollAmount / scrollSteps;
+
+                        for (let i = 0; i < scrollSteps; i++) {
+                            await page.evaluate((amount: number) => {
+                                window.scrollBy({ top: amount, behavior: 'smooth' });
+                            }, scrollIncrement);
+                            await sleep(humanDelay(80, 0.4));
+                        }
+
+                        executionResults.push({ step: step.step_order, action: 'scroll', success: true, details: `Scrolled ${scrollAmount}px` });
+                        break;
+                    }
+
+                    case 'nav': {
+                        if (!step.action_value) {
+                            throw new Error('No URL provided for nav action');
+                        }
+
+                        response.appendResponseLine(`  Navigating to: ${step.action_value}`);
+                        await page.goto(step.action_value, { waitUntil: 'networkidle2' });
+
+                        // Wait for page to settle
+                        await sleep(humanDelay(800, 0.3));
+
+                        executionResults.push({ step: step.step_order, action: 'nav', success: true, details: `Navigated to ${step.action_value}` });
+                        break;
+                    }
+
+                    case 'hover': {
+                        if (!step.selectors?.strategies) {
+                            throw new Error('No selectors available for hover action');
+                        }
+
+                        const result = await findElementByStrategies(
+                            page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            step.selectors.strategies,
+                        );
+
+                        if (!result) {
+                            throw new Error('Element not found for hover action');
+                        }
+
+                        const elementHandle = result.element as { hover: () => Promise<void> };
+                        await elementHandle.hover();
+                        // Hold hover for a moment
+                        await sleep(humanDelay(400, 0.3));
+
+                        executionResults.push({ step: step.step_order, action: 'hover', success: true, details: `Hovered using ${result.usedStrategy.type}` });
+                        break;
+                    }
+
+                    case 'extract': {
+                        if (!step.selectors?.strategies) {
+                            throw new Error('No selectors available for extract action');
+                        }
+
+                        const result = await findElementByStrategies(
+                            page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            step.selectors.strategies,
+                        );
+
+                        if (!result) {
+                            throw new Error('Element not found for extract action');
+                        }
+
+                        const elementHandle = result.element as { evaluate: (fn: (el: Element) => string) => Promise<string> };
+                        const extractedText = await elementHandle.evaluate((el: Element) => el.textContent || '');
+                        response.appendResponseLine(`  Extracted: "${extractedText.trim().substring(0, 100)}"`);
+
+                        executionResults.push({ step: step.step_order, action: 'extract', success: true, details: extractedText.trim().substring(0, 50) });
+                        break;
+                    }
+
+                    case 'screenshot': {
+                        const filename = step.action_value || `workflow_${workflow_id}_step_${step.step_order}.png`;
+                        const screenshot = await page.screenshot({ encoding: 'binary' });
+                        await context.saveFile(screenshot as Uint8Array, filename);
+                        response.appendResponseLine(`  Screenshot saved: ${filename}`);
+
+                        executionResults.push({ step: step.step_order, action: 'screenshot', success: true, details: filename });
+                        break;
+                    }
+
+                    default:
+                        throw new Error(`Unknown action type: ${step.action}`);
+                }
+
+                response.appendResponseLine(`  ✓ Step ${step.step_order} completed successfully`);
+            } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                response.appendResponseLine(`  ✗ Step ${step.step_order} failed: ${errorMessage}`);
+                executionResults.push({ step: step.step_order, action: step.action, success: false, details: errorMessage });
+
+                // Don't stop on error, continue with next step
+                continue;
+            }
+
+            // Human-like pause after action
+            await sleep(getPostActionDelay());
+        }
+
+        // Summary
+        response.appendResponseLine('\n--- Execution Summary ---');
+        const successCount = executionResults.filter(r => r.success).length;
+        response.appendResponseLine(`Total steps: ${executionResults.length}`);
+        response.appendResponseLine(`Successful: ${successCount}`);
+        response.appendResponseLine(`Failed: ${executionResults.length - successCount}`);
+    },
+});
