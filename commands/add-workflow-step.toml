@@ -1,0 +1,2 @@
+description = "Adds a new step to a workflow and runs the last step."
+prompt = "Add a new step to the specified workflow using the add_workflow_step tool. After completing this process, send the step_order value to the run_workflow tool to run the last step."
