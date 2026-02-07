@@ -4,7 +4,21 @@
   "mcpServers": {
     "chrome-devtools": {
       "command": "npx",
-      "args": ["chrome-devtools-mcp@latest"]
+      "args": [
+        "chrome-devtools-mcp@latest"
+      ]
     }
-  }
+  },
+  "settings": [
+    {
+      "name": "Supabase Url",
+      "description": "The URL for connecting to the Supabase instance.",
+      "envVar": "SUPABASE_URL"
+    },
+    {
+      "name": "Supabase Key",
+      "description": "The API key for the Supabase project.",
+      "envVar": "SUPABASE_KEY"
+    }
+  ]
 }
