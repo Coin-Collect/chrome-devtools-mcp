@@ -495,9 +495,59 @@ async function typeHumanLike(
     }
 }
 
+const VARIABLE_PATTERN = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g;
+
+const DUMMY_VALUES: Record<string, string> = {
+    email: 'user@example.com',
+    username: 'testuser',
+    password: 'Test1234!',
+    name: 'John Doe',
+    first_name: 'John',
+    last_name: 'Doe',
+    phone: '+1234567890',
+    address: '123 Main Street',
+    city: 'New York',
+    zip: '10001',
+    country: 'US',
+    search: 'test query',
+    url: 'https://example.com',
+    message: 'Hello, this is a test message.',
+    comment: 'This is a test comment.',
+};
+
+function getDummyValue(variableName: string): string {
+    const lowerName = variableName.toLowerCase();
+    // Try exact match first
+    if (DUMMY_VALUES[lowerName]) {
+        return DUMMY_VALUES[lowerName];
+    }
+    // Try partial match
+    for (const [key, value] of Object.entries(DUMMY_VALUES)) {
+        if (lowerName.includes(key) || key.includes(lowerName)) {
+            return value;
+        }
+    }
+    return `dummy_${variableName}`;
+}
+
+function resolveVariables(
+    template: string,
+    variables: Record<string, string>,
+): { resolved: string; usedDummy: string[] } {
+    const usedDummy: string[] = [];
+    const resolved = template.replace(VARIABLE_PATTERN, (_match, varName: string) => {
+        if (variables[varName] !== undefined) {
+            return variables[varName];
+        }
+        usedDummy.push(varName);
+        return getDummyValue(varName);
+    });
+    return { resolved, usedDummy };
+}
+
 export const runWorkflow = defineTool({
     name: 'run_workflow',
-    description: 'Runs a workflow or a specific step. Executes actions with human-like timing and robust selector fallbacks.',
+    description: 'Runs a workflow or a specific step. Executes actions with human-like timing and robust selector fallbacks. Use {{variable_name}} in action_value and pass runtime values via the variables parameter.',
     annotations: {
         category: ToolCategory.INPUT,
         readOnlyHint: false,
@@ -505,9 +555,11 @@ export const runWorkflow = defineTool({
     schema: {
         workflow_id: zod.number().describe('The ID of the workflow to run'),
         step_order: zod.number().optional().describe('If provided, only this specific step will be executed'),
+        variables: zod.record(zod.string(), zod.string()).optional().describe('Key-value pairs to resolve {{variable_name}} placeholders in action_value fields. Example: {"username": "john", "password": "secret"}'),
     },
     handler: async (request, response, context) => {
-        const { workflow_id, step_order } = request.params;
+        const { workflow_id, step_order, variables } = request.params;
+        const vars: Record<string, string> = variables || {};
 
         // Fetch workflow and steps
         let query = supabase
@@ -547,6 +599,18 @@ export const runWorkflow = defineTool({
             // Human-like thinking pause before action
             await sleep(getThinkingDelay());
 
+            // Resolve template variables in action_value
+            let actionValue = step.action_value;
+            if (actionValue && VARIABLE_PATTERN.test(actionValue)) {
+                // Reset lastIndex since we use global flag
+                VARIABLE_PATTERN.lastIndex = 0;
+                const { resolved, usedDummy } = resolveVariables(actionValue, vars);
+                actionValue = resolved;
+                if (usedDummy.length > 0) {
+                    response.appendResponseLine(`  ⚠ Using dummy values for: ${usedDummy.join(', ')}`);
+                }
+            }
+
             try {
                 switch (step.action) {
                     case 'click': {
@@ -576,7 +640,7 @@ export const runWorkflow = defineTool({
                     }
 
                     case 'type': {
-                        if (!step.action_value) {
+                        if (!actionValue) {
                             throw new Error('No text value provided for type action');
                         }
 
@@ -596,15 +660,15 @@ export const runWorkflow = defineTool({
                         // Type with human-like rhythm
                         await typeHumanLike(
                             page as unknown as { keyboard: { type: (char: string) => Promise<void> } },
-                            step.action_value,
+                            actionValue,
                         );
 
-                        executionResults.push({ step: step.step_order, action: 'type', success: true, details: `Typed "${step.action_value.substring(0, 20)}..."` });
+                        executionResults.push({ step: step.step_order, action: 'type', success: true, details: `Typed "${actionValue.substring(0, 20)}..."` });
                         break;
                     }
 
                     case 'wait': {
-                        const waitTime = step.action_value ? parseInt(step.action_value, 10) : 1000;
+                        const waitTime = actionValue ? parseInt(actionValue, 10) : 1000;
                         // Add human variance to wait time
                         const actualWait = humanDelay(waitTime, 0.15);
                         response.appendResponseLine(`  Waiting ${actualWait}ms`);
@@ -615,7 +679,7 @@ export const runWorkflow = defineTool({
                     }
 
                     case 'scroll': {
-                        const scrollAmount = step.action_value ? parseInt(step.action_value, 10) : 300;
+                        const scrollAmount = actionValue ? parseInt(actionValue, 10) : 300;
                         // Smooth scroll with increments
                         const scrollSteps = Math.ceil(Math.abs(scrollAmount) / 100);
                         const scrollIncrement = scrollAmount / scrollSteps;
@@ -632,17 +696,17 @@ export const runWorkflow = defineTool({
                     }
 
                     case 'nav': {
-                        if (!step.action_value) {
+                        if (!actionValue) {
                             throw new Error('No URL provided for nav action');
                         }
 
-                        response.appendResponseLine(`  Navigating to: ${step.action_value}`);
-                        await page.goto(step.action_value, { waitUntil: 'networkidle2' });
+                        response.appendResponseLine(`  Navigating to: ${actionValue}`);
+                        await page.goto(actionValue, { waitUntil: 'networkidle2' });
 
                         // Wait for page to settle
                         await sleep(humanDelay(800, 0.3));
 
-                        executionResults.push({ step: step.step_order, action: 'nav', success: true, details: `Navigated to ${step.action_value}` });
+                        executionResults.push({ step: step.step_order, action: 'nav', success: true, details: `Navigated to ${actionValue}` });
                         break;
                     }
 
@@ -692,7 +756,7 @@ export const runWorkflow = defineTool({
                     }
 
                     case 'screenshot': {
-                        const filename = step.action_value || `workflow_${workflow_id}_step_${step.step_order}.png`;
+                        const filename = actionValue || `workflow_${workflow_id}_step_${step.step_order}.png`;
                         const screenshot = await page.screenshot({ encoding: 'binary' });
                         await context.saveFile(screenshot as Uint8Array, filename);
                         response.appendResponseLine(`  Screenshot saved: ${filename}`);
