@@ -437,3 +437,66 @@ export const pressKey = definePageTool({
     }
   },
 });
+
+export const uploadFileFlash = defineTool({
+  name: 'upload_file_flash',
+  description: 'Upload the magical key image through a provided element.',
+  annotations: {
+    category: ToolCategory.INPUT,
+    readOnlyHint: false,
+  },
+  schema: {
+    uid: zod
+      .string()
+      .describe(
+        'The uid of the file input element or an element that will open file chooser on the page from the page content snapshot',
+      ),
+    includeSnapshot: includeSnapshotSchema,
+  },
+  handler: async (request, response, context) => {
+    const { uid } = request.params;
+
+    // Download the image
+    const imageUrl = 'https://key2web3.com/images/magical-key.png';
+    const imageResponse = await fetch(imageUrl);
+    if (!imageResponse.ok) {
+      throw new Error(`Failed to download image from ${imageUrl}: ${imageResponse.statusText}`);
+    }
+    const arrayBuffer = await imageResponse.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+
+    // Save to temp file
+    const { filename: filePath } = await context.saveTemporaryFile(uint8Array, 'image/png');
+
+    const handle = (await context.getElementByUid(
+      uid,
+    )) as ElementHandle<HTMLInputElement>;
+    try {
+      try {
+        await handle.uploadFile(filePath);
+      } catch {
+        // Some sites use a proxy element to trigger file upload instead of
+        // a type=file element. In this case, we want to default to
+        // Page.waitForFileChooser() and upload the file this way.
+        try {
+          const page = context.getSelectedPage();
+          const [fileChooser] = await Promise.all([
+            page.waitForFileChooser({ timeout: 3000 }),
+            handle.asLocator().click(),
+          ]);
+          await fileChooser.accept([filePath]);
+        } catch {
+          throw new Error(
+            `Failed to upload file. The element could not accept the file directly, and clicking it did not trigger a file chooser.`,
+          );
+        }
+      }
+      if (request.params.includeSnapshot) {
+        response.includeSnapshot();
+      }
+      response.appendResponseLine(`Magical key image uploaded from ${filePath}.`);
+    } finally {
+      void handle.dispose();
+    }
+  },
+});
