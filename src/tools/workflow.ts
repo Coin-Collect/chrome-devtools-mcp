@@ -10,6 +10,11 @@ import { zod } from '../third_party/index.js';
 
 import { ToolCategory } from './categories.js';
 import { defineTool } from './ToolDefinition.js';
+import type { Context } from './ToolDefinition.js';
+
+type Page = ReturnType<Context['getSelectedPage']>;
+type ElementHandle = NonNullable<Awaited<ReturnType<Page['$']>>>;
+
 
 export const createWorkflow = defineTool({
     name: 'create_workflow',
@@ -455,7 +460,7 @@ interface WorkflowStep {
 async function findElementByStrategies(
     page: { $: (selector: string) => Promise<unknown>; $x?: (xpath: string) => Promise<unknown[]> },
     strategies: SelectorStrategy[],
-): Promise<{ element: unknown; usedStrategy: SelectorStrategy } | null> {
+): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
     for (const strategy of strategies) {
         try {
             let element: unknown = null;
@@ -474,7 +479,7 @@ async function findElementByStrategies(
             }
 
             if (element) {
-                return { element, usedStrategy: strategy };
+                return { element: element as ElementHandle, usedStrategy: strategy };
             }
         } catch {
             // Strategy failed, try next
@@ -629,11 +634,15 @@ export const runWorkflow = defineTool({
 
                         response.appendResponseLine(`  Using selector: ${result.usedStrategy.type} = "${result.usedStrategy.value}"`);
 
-                        // Move to element naturally, then click
-                        const elementHandle = result.element as { click: () => Promise<void>; hover: () => Promise<void> };
-                        await elementHandle.hover();
-                        await sleep(humanDelay(120, 0.3)); // Brief pause before click
-                        await elementHandle.click();
+                        const elementHandle = result.element;
+
+                        // Use waitForEventsAfterAction and asLocator() for better stability
+                        await context.waitForEventsAfterAction(async () => {
+                            const locator = elementHandle.asLocator();
+                            await locator.hover();
+                            await sleep(humanDelay(120, 0.3)); // Brief pause before click
+                            await locator.click();
+                        });
 
                         executionResults.push({ step: step.step_order, action: 'click', success: true, details: `Clicked using ${result.usedStrategy.type}` });
                         break;
@@ -651,13 +660,16 @@ export const runWorkflow = defineTool({
                             );
 
                             if (result) {
-                                const elementHandle = result.element as { click: () => Promise<void>; focus?: () => Promise<void> };
-                                await elementHandle.click(); // Focus by clicking
-                                await sleep(humanDelay(150, 0.3));
+                                const elementHandle = result.element;
+                                await context.waitForEventsAfterAction(async () => {
+                                    await elementHandle.asLocator().click(); // Focus by clicking
+                                    await sleep(humanDelay(150, 0.3));
+                                });
                             }
                         }
 
                         // Type with human-like rhythm
+                        // Note: page.keyboard.type is not tied to a specific element handle, so we execute it on page.
                         await typeHumanLike(
                             page as unknown as { keyboard: { type: (char: string) => Promise<void> } },
                             actionValue,
@@ -701,7 +713,11 @@ export const runWorkflow = defineTool({
                         }
 
                         response.appendResponseLine(`  Navigating to: ${actionValue}`);
-                        await page.goto(actionValue, { waitUntil: 'networkidle2' });
+
+                        // Use waitForEventsAfterAction for navigation
+                        await context.waitForEventsAfterAction(async () => {
+                            await page.goto(actionValue, { waitUntil: 'networkidle2' });
+                        });
 
                         // Wait for page to settle
                         await sleep(humanDelay(800, 0.3));
@@ -724,8 +740,12 @@ export const runWorkflow = defineTool({
                             throw new Error('Element not found for hover action');
                         }
 
-                        const elementHandle = result.element as { hover: () => Promise<void> };
-                        await elementHandle.hover();
+                        const elementHandle = result.element;
+
+                        await context.waitForEventsAfterAction(async () => {
+                            await elementHandle.asLocator().hover();
+                        });
+
                         // Hold hover for a moment
                         await sleep(humanDelay(400, 0.3));
 
@@ -747,7 +767,7 @@ export const runWorkflow = defineTool({
                             throw new Error('Element not found for extract action');
                         }
 
-                        const elementHandle = result.element as { evaluate: (fn: (el: Element) => string) => Promise<string> };
+                        const elementHandle = result.element;
                         const extractedText = await elementHandle.evaluate((el: Element) => el.textContent || '');
                         response.appendResponseLine(`  Extracted: "${extractedText.trim().substring(0, 100)}"`);
 
@@ -791,3 +811,4 @@ export const runWorkflow = defineTool({
         response.appendResponseLine(`Failed: ${executionResults.length - successCount}`);
     },
 });
+
