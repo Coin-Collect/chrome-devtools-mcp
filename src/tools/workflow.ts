@@ -137,7 +137,7 @@ export const addWorkflowStep = defineTool({
     },
     schema: {
         workflow_id: zod.number().describe('The ID of the workflow to add the step to'),
-        action: zod.enum(['click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot']).describe('The action type for this step'),
+        action: zod.enum(['click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image']).describe('The action type for this step'),
         uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll actions.'),
         action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav)'),
         step_description: zod.string().optional().describe('A description of what this step does'),
@@ -147,7 +147,7 @@ export const addWorkflowStep = defineTool({
         const { workflow_id, action, uid, action_value, step_description, step_order } = request.params;
 
         // Actions that require an element
-        const elementRequiredActions = ['click', 'type', 'hover', 'extract', 'scroll'];
+        const elementRequiredActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
         const requiresElement = elementRequiredActions.includes(action);
 
         let selectorsData: SelectorsData | null = null;
@@ -782,6 +782,58 @@ export const runWorkflow = defineTool({
                         response.appendResponseLine(`  Screenshot saved: ${filename}`);
 
                         executionResults.push({ step: step.step_order, action: 'screenshot', success: true, details: filename });
+                        break;
+                    }
+
+                    case 'upload_image': {
+                        if (!step.selectors?.strategies) {
+                            throw new Error('No selectors available for upload_image action');
+                        }
+                        if (!actionValue) {
+                            throw new Error('No image URL provided for upload_image action');
+                        }
+
+                        const result = await findElementByStrategies(
+                            page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            step.selectors.strategies,
+                        );
+
+                        if (!result) {
+                            throw new Error('Element not found for upload_image action');
+                        }
+
+                        response.appendResponseLine(`  Downloading image from: ${actionValue}`);
+
+                        // Download the image
+                        const imageResponse = await fetch(actionValue);
+                        if (!imageResponse.ok) {
+                            throw new Error(`Failed to download image from ${actionValue}: ${imageResponse.statusText}`);
+                        }
+                        const arrayBuffer = await imageResponse.arrayBuffer();
+                        const uint8Array = new Uint8Array(arrayBuffer);
+
+                        // Save to temp file
+                        const { filename: filePath } = await context.saveTemporaryFile(uint8Array, 'image/png');
+
+                        const uploadHandle = result.element;
+                        try {
+                            await (uploadHandle as unknown as { uploadFile: (path: string) => Promise<void> }).uploadFile(filePath);
+                        } catch {
+                            try {
+                                const [fileChooser] = await Promise.all([
+                                    page.waitForFileChooser({ timeout: 3000 }),
+                                    uploadHandle.asLocator().click(),
+                                ]);
+                                await fileChooser.accept([filePath]);
+                            } catch {
+                                throw new Error(
+                                    'Failed to upload image. The element could not accept the file directly, and clicking it did not trigger a file chooser.',
+                                );
+                            }
+                        }
+
+                        response.appendResponseLine(`  Image uploaded from ${filePath}`);
+                        executionResults.push({ step: step.step_order, action: 'upload_image', success: true, details: `Uploaded image from ${actionValue}` });
                         break;
                     }
 
