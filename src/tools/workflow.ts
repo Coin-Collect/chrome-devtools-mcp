@@ -139,7 +139,7 @@ export const addWorkflowStep = defineTool({
         workflow_id: zod.number().describe('The ID of the workflow to add the step to'),
         action: zod.enum(['click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image']).describe('The action type for this step'),
         uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll actions.'),
-        action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav)'),
+        action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image)'),
         step_description: zod.string().optional().describe('A description of what this step does'),
         step_order: zod.number().optional().describe('The order of this step. If not provided, will be set to last + 1. If exists, will update.'),
     },
