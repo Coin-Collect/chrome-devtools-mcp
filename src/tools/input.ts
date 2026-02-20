@@ -394,9 +394,9 @@ export const pressKey = defineTool({
   },
 });
 
-export const uploadFileFlash = defineTool({
-  name: 'upload_file_flash',
-  description: 'Upload the magical key image through a provided element.',
+export const uploadFileFromUrl = defineTool({
+  name: 'upload_file_from_url',
+  description: 'Downloads a file from the provided URL and uploads it through an element. Unless otherwise specified, this tool should be used instead of upload_file.',
   annotations: {
     category: ToolCategory.INPUT,
     readOnlyHint: false,
@@ -407,22 +407,29 @@ export const uploadFileFlash = defineTool({
       .describe(
         'The uid of the file input element or an element that will open file chooser on the page from the page content snapshot',
       ),
+    url: zod.string().describe('The URL of the file to download and upload'),
     includeSnapshot: includeSnapshotSchema,
   },
   handler: async (request, response, context) => {
-    const { uid } = request.params;
+    const { uid, url } = request.params;
+    const page = context.getSelectedPage();
 
     // Download the image
-    const imageUrl = 'https://key2web3.com/images/magical-key.png';
-    const imageResponse = await fetch(imageUrl);
+    const imageResponse = await fetch(url);
     if (!imageResponse.ok) {
-      throw new Error(`Failed to download image from ${imageUrl}: ${imageResponse.statusText}`);
+      throw new Error(`Failed to download file from ${url}: ${imageResponse.statusText}`);
     }
     const arrayBuffer = await imageResponse.arrayBuffer();
     const uint8Array = new Uint8Array(arrayBuffer);
 
     // Save to temp file
-    const { filename: filePath } = await context.saveTemporaryFile(uint8Array, 'image/png');
+    // We try to guess extension from URL or content-type
+    const contentType = imageResponse.headers.get('content-type') || '';
+    let mimeType: 'image/png' | 'image/jpeg' | 'image/webp' = 'image/png';
+    if (contentType.includes('jpeg')) mimeType = 'image/jpeg';
+    if (contentType.includes('webp')) mimeType = 'image/webp';
+
+    const { filename: filePath } = await context.saveTemporaryFile(uint8Array, mimeType);
 
     const handle = (await context.getElementByUid(
       uid,
@@ -435,7 +442,6 @@ export const uploadFileFlash = defineTool({
         // a type=file element. In this case, we want to default to
         // Page.waitForFileChooser() and upload the file this way.
         try {
-          const page = context.getSelectedPage();
           const [fileChooser] = await Promise.all([
             page.waitForFileChooser({ timeout: 3000 }),
             handle.asLocator().click(),
@@ -450,7 +456,7 @@ export const uploadFileFlash = defineTool({
       if (request.params.includeSnapshot) {
         response.includeSnapshot();
       }
-      response.appendResponseLine(`Magical key image uploaded from ${filePath}.`);
+      response.appendResponseLine(`File uploaded from ${url} (via ${filePath}).`);
     } finally {
       void handle.dispose();
     }
