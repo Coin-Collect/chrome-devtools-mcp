@@ -16,6 +16,17 @@ import type { Context } from './ToolDefinition.js';
 type Page = ReturnType<Context['getSelectedPage']>;
 type ElementHandle<T = Element> = NonNullable<Awaited<ReturnType<Page['$']>>>;
 
+interface WithUploadFile {
+  uploadFile(...filePaths: string[]): Promise<void>;
+}
+
+function asUploadFile(handle: ElementHandle): WithUploadFile | null {
+  const h = handle as ElementHandle & { uploadFile?: (...filePaths: string[]) => Promise<void> };
+  if (typeof h.uploadFile !== 'function') return null;
+  const fn: (...filePaths: string[]) => Promise<void> = h.uploadFile;
+  return { uploadFile: (...args) => fn.apply(h, args) };
+}
+
 const dblClickSchema = zod
   .boolean()
   .optional()
@@ -322,12 +333,14 @@ export const uploadFile = defineTool({
   },
   handler: async (request, response, context) => {
     const { uid, filePath } = request.params;
-    const handle = (await context.getElementByUid(
-      uid,
-    )) as ElementHandle<HTMLInputElement>;
+    const handle = await context.getElementByUid(uid);
     try {
       try {
-        await handle.uploadFile(filePath);
+        const uploader = asUploadFile(handle);
+        if (!uploader) {
+          throw new Error('Element does not support file upload.');
+        }
+        await uploader.uploadFile(filePath);
       } catch {
         // Some sites use a proxy element to trigger file upload instead of
         // a type=file element. In this case, we want to default to
@@ -431,12 +444,14 @@ export const uploadFileFromUrl = defineTool({
 
     const { filename: filePath } = await context.saveTemporaryFile(uint8Array, mimeType);
 
-    const handle = (await context.getElementByUid(
-      uid,
-    )) as ElementHandle<HTMLInputElement>;
+    const handle = await context.getElementByUid(uid);
     try {
       try {
-        await handle.uploadFile(filePath);
+        const uploader = asUploadFile(handle);
+        if (!uploader) {
+          throw new Error('Element does not support file upload.');
+        }
+        await uploader.uploadFile(filePath);
       } catch {
         // Some sites use a proxy element to trigger file upload instead of
         // a type=file element. In this case, we want to default to
