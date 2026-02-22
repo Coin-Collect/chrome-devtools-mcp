@@ -15,6 +15,17 @@ import {ToolCategory} from './categories.js';
 import type {ContextPage} from './ToolDefinition.js';
 import {definePageTool} from './ToolDefinition.js';
 
+interface WithUploadFile {
+  uploadFile(...filePaths: string[]): Promise<void>;
+}
+
+function asUploadFile(handle: ElementHandle): WithUploadFile | null {
+  const h = handle as ElementHandle & { uploadFile?: (...filePaths: string[]) => Promise<void> };
+  if (typeof h.uploadFile !== 'function') return null;
+  const fn: (...filePaths: string[]) => Promise<void> = h.uploadFile;
+  return { uploadFile: (...args) => fn.apply(h, args) };
+}
+
 const dblClickSchema = zod
   .boolean()
   .optional()
@@ -372,7 +383,11 @@ export const uploadFile = definePageTool({
     )) as ElementHandle<HTMLInputElement>;
     try {
       try {
-        await handle.uploadFile(filePath);
+        const uploader = asUploadFile(handle);
+        if (!uploader) {
+          throw new Error('Element does not support file upload.');
+        }
+        await uploader.uploadFile(filePath);
       } catch {
         // Some sites use a proxy element to trigger file upload instead of
         // a type=file element. In this case, we want to default to
@@ -438,7 +453,7 @@ export const pressKey = definePageTool({
   },
 });
 
-export const uploadFileFromUrl = defineTool({
+export const uploadFileFromUrl = definePageTool({
   name: 'upload_file_from_url',
   description: 'Downloads a file from the provided URL and uploads it through an element. Unless otherwise specified, this tool should be used instead of upload_file.',
   annotations: {
@@ -455,8 +470,7 @@ export const uploadFileFromUrl = defineTool({
     includeSnapshot: includeSnapshotSchema,
   },
   handler: async (request, response, context) => {
-    const { uid, url } = request.params;
-    const page = context.getSelectedPage();
+    const {uid, url} = request.params;
 
     // Download the image
     const imageResponse = await fetch(url);
@@ -473,21 +487,26 @@ export const uploadFileFromUrl = defineTool({
     if (contentType.includes('jpeg')) mimeType = 'image/jpeg';
     if (contentType.includes('webp')) mimeType = 'image/webp';
 
-    const { filename: filePath } = await context.saveTemporaryFile(uint8Array, mimeType);
+    const mcpContext = context as McpContext;
+    const {filename: filePath} = await mcpContext.saveTemporaryFile(uint8Array, mimeType);
 
-    const handle = (await context.getElementByUid(
+    const handle = (await request.page.getElementByUid(
       uid,
     )) as ElementHandle<HTMLInputElement>;
     try {
       try {
-        await handle.uploadFile(filePath);
+        const uploader = asUploadFile(handle);
+        if (!uploader) {
+          throw new Error('Element does not support file upload.');
+        }
+        await uploader.uploadFile(filePath);
       } catch {
         // Some sites use a proxy element to trigger file upload instead of
         // a type=file element. In this case, we want to default to
         // Page.waitForFileChooser() and upload the file this way.
         try {
           const [fileChooser] = await Promise.all([
-            page.waitForFileChooser({ timeout: 3000 }),
+            request.page.pptrPage.waitForFileChooser({timeout: 3000}),
             handle.asLocator().click(),
           ]);
           await fileChooser.accept([filePath]);
