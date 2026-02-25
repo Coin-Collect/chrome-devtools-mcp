@@ -3,10 +3,11 @@
   "version": "latest",
   "mcpServers": {
     "chrome-devtools": {
-      "command": "npx",
+      "command": "node",
       "args": [
-        "chrome-devtools-mcp@latest"
-      ]
+        "${extensionPath}${/}build${/}src${/}index.js"
+      ],
+      "cwd": "${extensionPath}"
     }
   },
   "settings": [
