@@ -320,11 +320,37 @@ export const addWorkflowStep = defineTool({
 
             // Sort by priority and pick best selector
             strategies.sort((a, b) => a.priority - b.priority);
-            const best_selector = strategies.length > 0 ? strategies[0].value : '';
+
+            // Filter out selectors that match more than one element
+            const page = context.getSelectedPage();
+            const uniqueStrategies: SelectorStrategy[] = [];
+            for (const strategy of strategies) {
+                const matchCount = await page.evaluate((selectorValue: string, selectorType: string) => {
+                    if (selectorType === 'xpath' || selectorType === 'text') {
+                        // XPath-based selectors
+                        const result = document.evaluate(
+                            selectorValue,
+                            document,
+                            null,
+                            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+                            null,
+                        );
+                        return result.snapshotLength;
+                    }
+                    // CSS-based selectors
+                    return document.querySelectorAll(selectorValue).length;
+                }, strategy.value, strategy.type);
+
+                if (matchCount === 1) {
+                    uniqueStrategies.push(strategy);
+                }
+            }
+
+            const best_selector = uniqueStrategies.length > 0 ? uniqueStrategies[0].value : '';
 
             selectorsData = {
                 best_selector,
-                strategies,
+                strategies: uniqueStrategies,
                 ax_node_meta,
             };
 
