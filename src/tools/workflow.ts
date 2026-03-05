@@ -169,8 +169,32 @@ export const addWorkflowStep = defineTool({
                 description: String(nodeAsRecord['description'] || ''),
             };
 
-            // Generate selector strategies using handle.evaluate
-            const strategies: SelectorStrategy[] = await handle.evaluate((el: Element) => {
+            // Detect if the element is inside shadow DOM (e.g. spinbutton inside <input type="date">)
+            // If so, promote to the shadow host element since shadow DOM internals are unreachable by CSS/XPath
+            const isInShadowDOM = await handle.evaluate((el: Element) => {
+                const root = el.getRootNode();
+                return root instanceof ShadowRoot;
+            });
+
+            let selectorHandle = handle;
+            if (isInShadowDOM) {
+                const hostHandle = await handle.evaluateHandle((el: Element) => {
+                    const root = el.getRootNode();
+                    if (root instanceof ShadowRoot) {
+                        return root.host;
+                    }
+                    return el;
+                });
+                // Use the host element for selector generation
+                const hostElement = hostHandle.asElement();
+                if (hostElement) {
+                    selectorHandle = hostElement as unknown as typeof handle;
+                    ax_node_meta.description = `Shadow DOM promoted: original role was ${ax_node_meta.role}, targeting host element`;
+                }
+            }
+
+            // Generate selector strategies using selectorHandle.evaluate
+            const strategies: SelectorStrategy[] = await selectorHandle.evaluate((el: Element) => {
                 const results: SelectorStrategy[] = [];
 
                 // 1. ID selector (highest priority)
