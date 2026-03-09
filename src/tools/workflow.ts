@@ -498,6 +498,142 @@ async function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
 }
 
+// --- Natural mouse movement utilities ---
+
+interface Point {
+    x: number;
+    y: number;
+}
+
+// Cubic Bezier interpolation: B(t) = (1-t)^3*P0 + 3*(1-t)^2*t*P1 + 3*(1-t)*t^2*P2 + t^3*P3
+function cubicBezier(t: number, p0: Point, p1: Point, p2: Point, p3: Point): Point {
+    const u = 1 - t;
+    const u2 = u * u;
+    const u3 = u2 * u;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return {
+        x: u3 * p0.x + 3 * u2 * t * p1.x + 3 * u * t2 * p2.x + t3 * p3.x,
+        y: u3 * p0.y + 3 * u2 * t * p1.y + 3 * u * t2 * p2.y + t3 * p3.y,
+    };
+}
+
+// Fitts's Law: T = a + b * log2(D / W + 1)
+// a = base reaction time, b = movement coefficient, D = distance, W = target width
+function fittsLawDuration(distance: number, targetWidth = 20): number {
+    const a = 50;   // base time in ms
+    const b = 150;  // movement coefficient in ms
+    const indexOfDifficulty = Math.log2(distance / targetWidth + 1);
+    const duration = a + b * indexOfDifficulty;
+    // Add human variance
+    return Math.max(80, humanDelay(duration, 0.2));
+}
+
+// Generate randomized Bezier control points that create a natural arc
+function generateControlPoints(start: Point, end: Point): { cp1: Point; cp2: Point } {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+
+    // Control point spread scales with distance but is capped
+    const spread = Math.min(distance * 0.4, 200);
+
+    // Perpendicular direction for arc offset
+    const perpX = -dy / (distance || 1);
+    const perpY = dx / (distance || 1);
+
+    // Randomize arc direction and magnitude
+    const arcOffset1 = gaussianRandom(0, spread * 0.5);
+    const arcOffset2 = gaussianRandom(0, spread * 0.3);
+
+    // CP1 at ~30% along the line, CP2 at ~70%
+    const cp1: Point = {
+        x: start.x + dx * 0.3 + perpX * arcOffset1 + gaussianRandom(0, spread * 0.1),
+        y: start.y + dy * 0.3 + perpY * arcOffset1 + gaussianRandom(0, spread * 0.1),
+    };
+    const cp2: Point = {
+        x: start.x + dx * 0.7 + perpX * arcOffset2 + gaussianRandom(0, spread * 0.1),
+        y: start.y + dy * 0.7 + perpY * arcOffset2 + gaussianRandom(0, spread * 0.1),
+    };
+
+    return { cp1, cp2 };
+}
+
+// Move mouse naturally from current position to target using cubic Bezier + Fitts's Law
+async function moveMouseNaturally(
+    pageMouse: { move: (x: number, y: number) => Promise<void> },
+    startX: number,
+    startY: number,
+    targetX: number,
+    targetY: number,
+): Promise<void> {
+    const start: Point = { x: startX, y: startY };
+    const end: Point = { x: targetX, y: targetY };
+
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+
+    // Skip movement for very short distances
+    if (distance < 3) {
+        await pageMouse.move(end.x, end.y);
+        return;
+    }
+
+    // Calculate movement duration using Fitts's Law
+    const duration = fittsLawDuration(distance);
+
+    // Generate Bezier control points for natural arc
+    const { cp1, cp2 } = generateControlPoints(start, end);
+
+    // Number of steps scales with distance and duration
+    const stepCount = Math.max(10, Math.min(Math.ceil(distance / 5), 80));
+    const stepDuration = duration / stepCount;
+
+    // Ease-in-out: accelerate then decelerate (mimics real hand motion)
+    for (let i = 1; i <= stepCount; i++) {
+        // Use sinusoidal easing for natural acceleration/deceleration
+        const rawT = i / stepCount;
+        const easedT = 0.5 - 0.5 * Math.cos(Math.PI * rawT);
+
+        const point = cubicBezier(easedT, start, cp1, cp2, end);
+
+        // Add micro-jitter to simulate hand tremor (very subtle)
+        const jitter = distance > 50 ? 0.5 : 0;
+        const jitterX = jitter > 0 ? gaussianRandom(0, jitter) : 0;
+        const jitterY = jitter > 0 ? gaussianRandom(0, jitter) : 0;
+
+        await pageMouse.move(
+            Math.round(point.x + jitterX),
+            Math.round(point.y + jitterY),
+        );
+
+        // Variable delay per step with slight randomness
+        const delay = stepDuration * (0.8 + Math.random() * 0.4);
+        await sleep(delay);
+    }
+
+    // Ensure we end exactly on target
+    await pageMouse.move(Math.round(end.x), Math.round(end.y));
+}
+
+// Get the bounding box center of an element
+async function getElementCenter(
+    element: ElementHandle,
+): Promise<Point | null> {
+    const box = await element.boundingBox();
+    if (!box) return null;
+    return {
+        x: box.x + box.width / 2,
+        y: box.y + box.height / 2,
+    };
+}
+
+// Track last known mouse position (starts roughly at center of viewport)
+let lastMouseX = 400;
+let lastMouseY = 300;
+
+
 interface WorkflowStep {
     id: number;
     step_order: number;
@@ -672,12 +808,24 @@ export const runWorkflow = defineTool({
 
                         const elementHandle = result.element;
 
-                        // Use waitForEventsAfterAction and asLocator() for better stability
+                        // Natural mouse movement to element, then click
+                        const center = await getElementCenter(elementHandle);
+                        if (!center) {
+                            throw new Error('Could not determine element position for click');
+                        }
+
                         await context.waitForEventsAfterAction(async () => {
-                            const locator = elementHandle.asLocator();
-                            await locator.hover();
+                            // Move mouse naturally along a Bezier curve
+                            await moveMouseNaturally(
+                                page.mouse,
+                                lastMouseX, lastMouseY,
+                                center.x, center.y,
+                            );
+                            lastMouseX = center.x;
+                            lastMouseY = center.y;
+
                             await sleep(humanDelay(120, 0.3)); // Brief pause before click
-                            await locator.click();
+                            await page.mouse.click(center.x, center.y);
                         });
 
                         executionResults.push({ step: step.step_order, action: 'click', success: true, details: `Clicked using ${result.usedStrategy.type}` });
@@ -697,10 +845,22 @@ export const runWorkflow = defineTool({
 
                             if (result) {
                                 const elementHandle = result.element;
-                                await context.waitForEventsAfterAction(async () => {
-                                    await elementHandle.asLocator().click(); // Focus by clicking
-                                    await sleep(humanDelay(150, 0.3));
-                                });
+                                const center = await getElementCenter(elementHandle);
+                                if (center) {
+                                    // Move mouse naturally to element, then click to focus
+                                    await moveMouseNaturally(
+                                        page.mouse,
+                                        lastMouseX, lastMouseY,
+                                        center.x, center.y,
+                                    );
+                                    lastMouseX = center.x;
+                                    lastMouseY = center.y;
+
+                                    await context.waitForEventsAfterAction(async () => {
+                                        await page.mouse.click(center.x, center.y);
+                                        await sleep(humanDelay(150, 0.3));
+                                    });
+                                }
                             }
                         }
 
@@ -778,8 +938,20 @@ export const runWorkflow = defineTool({
 
                         const elementHandle = result.element;
 
+                        // Natural mouse movement to element for hover
+                        const center = await getElementCenter(elementHandle);
+                        if (!center) {
+                            throw new Error('Could not determine element position for hover');
+                        }
+
                         await context.waitForEventsAfterAction(async () => {
-                            await elementHandle.asLocator().hover();
+                            await moveMouseNaturally(
+                                page.mouse,
+                                lastMouseX, lastMouseY,
+                                center.x, center.y,
+                            );
+                            lastMouseX = center.x;
+                            lastMouseY = center.y;
                         });
 
                         // Hold hover for a moment
