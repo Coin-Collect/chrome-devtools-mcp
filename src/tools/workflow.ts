@@ -617,15 +617,28 @@ async function moveMouseNaturally(
     await pageMouse.move(Math.round(end.x), Math.round(end.y));
 }
 
-// Get the bounding box center of an element
-async function getElementCenter(
+// Get a human-like click point within an element (biased toward center with Gaussian variance)
+async function getElementClickPoint(
     element: ElementHandle,
 ): Promise<Point | null> {
     const box = await element.boundingBox();
     if (!box) return null;
+
+    const centerX = box.x + box.width / 2;
+    const centerY = box.y + box.height / 2;
+
+    // Gaussian offset: ~68% of clicks land within stdDev of center
+    // Use 15% of dimension as stdDev, clamped to stay inside element
+    const offsetX = gaussianRandom(0, box.width * 0.15);
+    const offsetY = gaussianRandom(0, box.height * 0.15);
+
+    // Clamp to stay within ~85% of element bounds (safe inner area)
+    const safeMarginX = box.width * 0.15;
+    const safeMarginY = box.height * 0.15;
+
     return {
-        x: box.x + box.width / 2,
-        y: box.y + box.height / 2,
+        x: Math.min(Math.max(centerX + offsetX, box.x + safeMarginX), box.x + box.width - safeMarginX),
+        y: Math.min(Math.max(centerY + offsetY, box.y + safeMarginY), box.y + box.height - safeMarginY),
     };
 }
 
@@ -809,7 +822,7 @@ export const runWorkflow = defineTool({
                         const elementHandle = result.element;
 
                         // Natural mouse movement to element, then click
-                        const center = await getElementCenter(elementHandle);
+                        const center = await getElementClickPoint(elementHandle);
                         if (!center) {
                             throw new Error('Could not determine element position for click');
                         }
@@ -845,7 +858,7 @@ export const runWorkflow = defineTool({
 
                             if (result) {
                                 const elementHandle = result.element;
-                                const center = await getElementCenter(elementHandle);
+                                const center = await getElementClickPoint(elementHandle);
                                 if (center) {
                                     // Move mouse naturally to element, then click to focus
                                     await moveMouseNaturally(
@@ -939,7 +952,7 @@ export const runWorkflow = defineTool({
                         const elementHandle = result.element;
 
                         // Natural mouse movement to element for hover
-                        const center = await getElementCenter(elementHandle);
+                        const center = await getElementClickPoint(elementHandle);
                         if (!center) {
                             throw new Error('Could not determine element position for hover');
                         }
