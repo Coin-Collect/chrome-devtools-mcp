@@ -552,52 +552,13 @@ async function typeHumanLike(
 
 const VARIABLE_PATTERN = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g;
 
-const DUMMY_VALUES: Record<string, string> = {
-    email: 'user@example.com',
-    username: 'testuser',
-    password: 'Test1234!',
-    name: 'John Doe',
-    first_name: 'John',
-    last_name: 'Doe',
-    phone: '+1234567890',
-    address: '123 Main Street',
-    city: 'New York',
-    zip: '10001',
-    country: 'US',
-    search: 'test query',
-    url: 'https://example.com',
-    message: 'Hello, this is a test message.',
-    comment: 'This is a test comment.',
-};
-
-function getDummyValue(variableName: string): string {
-    const lowerName = variableName.toLowerCase();
-    // Try exact match first
-    if (DUMMY_VALUES[lowerName]) {
-        return DUMMY_VALUES[lowerName];
-    }
-    // Try partial match
-    for (const [key, value] of Object.entries(DUMMY_VALUES)) {
-        if (lowerName.includes(key) || key.includes(lowerName)) {
-            return value;
-        }
-    }
-    return `dummy_${variableName}`;
-}
-
 function resolveVariables(
     template: string,
     variables: Record<string, string>,
-): { resolved: string; usedDummy: string[] } {
-    const usedDummy: string[] = [];
-    const resolved = template.replace(VARIABLE_PATTERN, (_match, varName: string) => {
-        if (variables[varName] !== undefined) {
-            return variables[varName];
-        }
-        usedDummy.push(varName);
-        return getDummyValue(varName);
+): string {
+    return template.replace(VARIABLE_PATTERN, (_match, varName: string) => {
+        return variables[varName];
     });
-    return { resolved, usedDummy };
 }
 
 export const runWorkflow = defineTool({
@@ -645,6 +606,35 @@ export const runWorkflow = defineTool({
         const page = context.getSelectedPage();
         const executionResults: Array<{ step: number; action: string; success: boolean; details: string }> = [];
 
+        // Pre-execution variable validation: scan all steps for required variables
+        const missingVariables: Array<{ variable: string; stepOrder: number; description: string }> = [];
+        for (const step of steps as WorkflowStep[]) {
+            if (step.action_value) {
+                VARIABLE_PATTERN.lastIndex = 0;
+                let match = VARIABLE_PATTERN.exec(step.action_value);
+                while (match) {
+                    const varName = match[1];
+                    if (vars[varName] === undefined) {
+                        missingVariables.push({
+                            variable: varName,
+                            stepOrder: step.step_order,
+                            description: step.description || step.action,
+                        });
+                    }
+                    match = VARIABLE_PATTERN.exec(step.action_value);
+                }
+            }
+        }
+
+        if (missingVariables.length > 0) {
+            response.appendResponseLine('❌ Missing required variables:');
+            for (const mv of missingVariables) {
+                response.appendResponseLine(`  • "${mv.variable}" — Step ${mv.stepOrder}: ${mv.description}`);
+            }
+            response.appendResponseLine('\nPlease provide these variables and try again.');
+            return;
+        }
+
         for (const step of steps as WorkflowStep[]) {
             response.appendResponseLine(`\n▶ Executing step ${step.step_order}: ${step.action}`);
             if (step.description) {
@@ -659,11 +649,7 @@ export const runWorkflow = defineTool({
             if (actionValue && VARIABLE_PATTERN.test(actionValue)) {
                 // Reset lastIndex since we use global flag
                 VARIABLE_PATTERN.lastIndex = 0;
-                const { resolved, usedDummy } = resolveVariables(actionValue, vars);
-                actionValue = resolved;
-                if (usedDummy.length > 0) {
-                    response.appendResponseLine(`  ⚠ Using dummy values for: ${usedDummy.join(', ')}`);
-                }
+                actionValue = resolveVariables(actionValue, vars);
             }
 
             try {
