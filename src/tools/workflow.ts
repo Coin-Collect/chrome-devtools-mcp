@@ -1085,3 +1085,261 @@ export const runWorkflow = defineTool({
     },
 });
 
+export const simulateWorkflow = defineTool({
+    name: 'simulate_workflow',
+    description: 'Visually simulates a workflow without executing actions. Highlights target elements, moves the mouse naturally, and shows action labels so the user can preview workflow behavior.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: true,
+    },
+    schema: {
+        workflow_id: zod.number().describe('The ID of the workflow to simulate'),
+        step_order: zod.number().optional().describe('If provided, only this specific step will be simulated'),
+        pause_ms: zod.number().optional().describe('Pause duration per step in milliseconds (default: 2000)'),
+    },
+    handler: async (request, response, context) => {
+        const { workflow_id, step_order, pause_ms } = request.params;
+        const pauseDuration = pause_ms || 2000;
+
+        // Fetch workflow steps
+        let query = supabase
+            .from('workflow_steps')
+            .select('*')
+            .eq('workflow_id', workflow_id)
+            .order('step_order', { ascending: true });
+
+        if (step_order !== undefined) {
+            query = query.eq('step_order', step_order);
+        }
+
+        const { data: steps, error } = await query;
+
+        if (error) {
+            throw new Error(`Failed to fetch workflow steps: ${error.message}`);
+        }
+
+        if (!steps || steps.length === 0) {
+            response.appendResponseLine('No steps found for simulation.');
+            return;
+        }
+
+        const page = context.getSelectedPage();
+
+        // Inject simulation overlay styles once
+        await page.evaluate(() => {
+            const existingStyle = document.getElementById('__wf_sim_style');
+            if (existingStyle) existingStyle.remove();
+
+            const style = document.createElement('style');
+            style.id = '__wf_sim_style';
+            style.textContent = `
+                @keyframes __wf_sim_pulse {
+                    0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.6); }
+                    50% { box-shadow: 0 0 0 8px rgba(99, 102, 241, 0); }
+                    100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+                }
+                .__wf_sim_highlight {
+                    outline: 3px solid #6366f1 !important;
+                    outline-offset: 2px !important;
+                    animation: __wf_sim_pulse 1s ease-in-out infinite !important;
+                    position: relative !important;
+                    z-index: 999998 !important;
+                }
+                .__wf_sim_label {
+                    position: fixed !important;
+                    z-index: 999999 !important;
+                    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+                    color: #fff !important;
+                    padding: 8px 16px !important;
+                    border-radius: 8px !important;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+                    font-size: 14px !important;
+                    font-weight: 600 !important;
+                    pointer-events: none !important;
+                    white-space: nowrap !important;
+                    box-shadow: 0 4px 16px rgba(0,0,0,0.2) !important;
+                    transition: opacity 0.3s ease !important;
+                }
+                .__wf_sim_banner {
+                    position: fixed !important;
+                    top: 50% !important;
+                    left: 50% !important;
+                    transform: translate(-50%, -50%) !important;
+                    z-index: 999999 !important;
+                    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+                    color: #fff !important;
+                    padding: 20px 40px !important;
+                    border-radius: 16px !important;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+                    font-size: 18px !important;
+                    font-weight: 700 !important;
+                    text-align: center !important;
+                    pointer-events: none !important;
+                    box-shadow: 0 8px 32px rgba(0,0,0,0.3) !important;
+                }
+            `;
+            document.head.appendChild(style);
+        });
+
+        response.appendResponseLine(`🎬 Simulating workflow ${workflow_id} (${steps.length} steps)\n`);
+
+        for (const step of steps as WorkflowStep[]) {
+            const actionLabel = step.description || step.action;
+            const actionValue = step.action_value || '';
+
+            response.appendResponseLine(`▶ Step ${step.step_order}: ${step.action} — ${actionLabel}`);
+
+            try {
+                const elementActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
+
+                if (elementActions.includes(step.action) && step.selectors?.strategies) {
+                    // Find the target element
+                    const result = await findElementByStrategies(
+                        page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                        step.selectors.strategies,
+                    );
+
+                    if (!result) {
+                        response.appendResponseLine(`  ⚠ Element not found — skipping visual`);
+                        continue;
+                    }
+
+                    const elementHandle = result.element;
+                    const clickPoint = await getElementClickPoint(elementHandle);
+
+                    // Highlight the element
+                    await elementHandle.evaluate((el: Element) => {
+                        el.classList.add('__wf_sim_highlight');
+                    });
+
+                    // Scroll element into view
+                    await elementHandle.evaluate((el: Element) => {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    });
+                    await sleep(400);
+
+                    // Show action label near the element
+                    const box = await elementHandle.boundingBox();
+                    if (box) {
+                        const labelText = step.action === 'type'
+                            ? `⌨ TYPE: "${actionValue.substring(0, 30)}${actionValue.length > 30 ? '...' : ''}"`
+                            : step.action === 'click'
+                                ? '🖱 CLICK'
+                                : step.action === 'hover'
+                                    ? '🖱 HOVER'
+                                    : step.action === 'extract'
+                                        ? '📋 EXTRACT'
+                                        : step.action === 'scroll'
+                                            ? '↕ SCROLL'
+                                            : step.action === 'upload_image'
+                                                ? '📤 UPLOAD'
+                                                : `⚡ ${step.action.toUpperCase()}`;
+
+                        await page.evaluate((text: string, top: number, left: number) => {
+                            const label = document.createElement('div');
+                            label.className = '__wf_sim_label';
+                            label.id = '__wf_sim_label';
+                            label.textContent = text;
+                            label.style.top = `${Math.max(8, top - 40)}px`;
+                            label.style.left = `${left}px`;
+                            document.body.appendChild(label);
+                        }, labelText, box.y, box.x);
+                    }
+
+                    // Move mouse naturally to the element
+                    if (clickPoint) {
+                        await moveMouseNaturally(
+                            page.mouse,
+                            lastMouseX, lastMouseY,
+                            clickPoint.x, clickPoint.y,
+                        );
+                        lastMouseX = clickPoint.x;
+                        lastMouseY = clickPoint.y;
+                    }
+
+                    response.appendResponseLine(`  ✓ Element found (${result.usedStrategy.type})`);
+
+                    // Pause for user observation
+                    await sleep(pauseDuration);
+
+                    // Remove highlight and label
+                    await elementHandle.evaluate((el: Element) => {
+                        el.classList.remove('__wf_sim_highlight');
+                    });
+                    await page.evaluate(() => {
+                        const label = document.getElementById('__wf_sim_label');
+                        if (label) label.remove();
+                    });
+
+                } else if (step.action === 'nav') {
+                    // Show navigation banner without actually navigating
+                    await page.evaluate((url: string) => {
+                        const banner = document.createElement('div');
+                        banner.className = '__wf_sim_banner';
+                        banner.id = '__wf_sim_banner';
+                        banner.textContent = `🌐 NAVIGATE → ${url}`;
+                        document.body.appendChild(banner);
+                    }, actionValue);
+
+                    response.appendResponseLine(`  🌐 Would navigate to: ${actionValue}`);
+                    await sleep(pauseDuration);
+
+                    await page.evaluate(() => {
+                        const banner = document.getElementById('__wf_sim_banner');
+                        if (banner) banner.remove();
+                    });
+
+                } else if (step.action === 'wait') {
+                    const waitMs = actionValue ? parseInt(actionValue, 10) : 1000;
+                    await page.evaluate((ms: number) => {
+                        const banner = document.createElement('div');
+                        banner.className = '__wf_sim_banner';
+                        banner.id = '__wf_sim_banner';
+                        banner.textContent = `⏳ WAIT ${ms}ms`;
+                        document.body.appendChild(banner);
+                    }, waitMs);
+
+                    response.appendResponseLine(`  ⏳ Would wait ${waitMs}ms`);
+                    await sleep(Math.min(pauseDuration, 1500));
+
+                    await page.evaluate(() => {
+                        const banner = document.getElementById('__wf_sim_banner');
+                        if (banner) banner.remove();
+                    });
+
+                } else if (step.action === 'screenshot') {
+                    await page.evaluate(() => {
+                        const banner = document.createElement('div');
+                        banner.className = '__wf_sim_banner';
+                        banner.id = '__wf_sim_banner';
+                        banner.textContent = '📸 SCREENSHOT';
+                        document.body.appendChild(banner);
+                    });
+
+                    response.appendResponseLine('  📸 Would take screenshot');
+                    await sleep(Math.min(pauseDuration, 1500));
+
+                    await page.evaluate(() => {
+                        const banner = document.getElementById('__wf_sim_banner');
+                        if (banner) banner.remove();
+                    });
+                }
+
+            } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                response.appendResponseLine(`  ✗ Simulation error: ${errorMessage}`);
+            }
+
+            // Short pause between steps
+            await sleep(300);
+        }
+
+        // Clean up simulation styles
+        await page.evaluate(() => {
+            const style = document.getElementById('__wf_sim_style');
+            if (style) style.remove();
+        });
+
+        response.appendResponseLine(`\n🎬 Simulation complete — ${steps.length} steps previewed`);
+    },
+});
