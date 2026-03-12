@@ -5,7 +5,8 @@
     "chrome-devtools": {
       "command": "node",
       "args": [
-        "${extensionPath}${/}build${/}src${/}index.js"
+        "${extensionPath}${/}build${/}src${/}index.js",
+        "--experimental-vision"
       ],
       "cwd": "${extensionPath}"
     }
