@@ -706,6 +706,76 @@ async function scrollElementIntoView(
 let lastMouseX = 400;
 let lastMouseY = 300;
 
+// Inject a symbolic cursor overlay that tracks mouse movements on the page
+async function injectSymbolicCursor(page: ReturnType<Context['getSelectedPage']>): Promise<void> {
+    await page.evaluate(() => {
+        const existing = document.getElementById('__wf_cursor');
+        if (existing) existing.remove();
+        const existingStyle = document.getElementById('__wf_cursor_style');
+        if (existingStyle) existingStyle.remove();
+
+        const style = document.createElement('style');
+        style.id = '__wf_cursor_style';
+        style.textContent = `
+            #__wf_cursor {
+                position: fixed;
+                width: 20px;
+                height: 20px;
+                pointer-events: none;
+                z-index: 2147483647;
+                transform: translate(-50%, -50%);
+                transition: left 0.02s linear, top 0.02s linear;
+            }
+            #__wf_cursor_dot {
+                width: 12px;
+                height: 12px;
+                background: radial-gradient(circle, #ef4444 0%, #dc2626 60%, transparent 100%);
+                border-radius: 50%;
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                box-shadow: 0 0 6px 2px rgba(239, 68, 68, 0.5);
+            }
+            #__wf_cursor_ring {
+                width: 20px;
+                height: 20px;
+                border: 2px solid rgba(239, 68, 68, 0.4);
+                border-radius: 50%;
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+            }
+        `;
+        document.head.appendChild(style);
+
+        const cursor = document.createElement('div');
+        cursor.id = '__wf_cursor';
+        cursor.innerHTML = '<div id="__wf_cursor_ring"></div><div id="__wf_cursor_dot"></div>';
+        cursor.style.left = '-100px';
+        cursor.style.top = '-100px';
+        document.body.appendChild(cursor);
+
+        document.addEventListener('mousemove', (e: MouseEvent) => {
+            const el = document.getElementById('__wf_cursor');
+            if (el) {
+                el.style.left = `${e.clientX}px`;
+                el.style.top = `${e.clientY}px`;
+            }
+        });
+    });
+}
+
+async function removeSymbolicCursor(page: ReturnType<Context['getSelectedPage']>): Promise<void> {
+    await page.evaluate(() => {
+        const cursor = document.getElementById('__wf_cursor');
+        if (cursor) cursor.remove();
+        const style = document.getElementById('__wf_cursor_style');
+        if (style) style.remove();
+    });
+}
+
 
 interface WorkflowStep {
     id: number;
@@ -814,6 +884,9 @@ export const runWorkflow = defineTool({
 
         const page = context.getSelectedPage();
         const executionResults: Array<{ step: number; action: string; success: boolean; details: string }> = [];
+
+        // Inject symbolic cursor for visual tracking
+        await injectSymbolicCursor(page);
 
         // Pre-execution variable validation: scan all steps for required variables
         const missingVariables: Array<{ variable: string; stepOrder: number; description: string }> = [];
@@ -1144,6 +1217,9 @@ export const runWorkflow = defineTool({
             await sleep(getPostActionDelay());
         }
 
+        // Remove symbolic cursor
+        await removeSymbolicCursor(page);
+
         // Summary
         response.appendResponseLine('\n--- Execution Summary ---');
         const successCount = executionResults.filter(r => r.success).length;
@@ -1192,6 +1268,9 @@ export const simulateWorkflow = defineTool({
         }
 
         const page = context.getSelectedPage();
+
+        // Inject symbolic cursor for visual tracking
+        await injectSymbolicCursor(page);
 
         // Inject simulation overlay styles once
         await page.evaluate(() => {
@@ -1402,7 +1481,8 @@ export const simulateWorkflow = defineTool({
             await sleep(300);
         }
 
-        // Clean up simulation styles
+        // Clean up simulation styles and symbolic cursor
+        await removeSymbolicCursor(page);
         await page.evaluate(() => {
             const style = document.getElementById('__wf_sim_style');
             if (style) style.remove();
