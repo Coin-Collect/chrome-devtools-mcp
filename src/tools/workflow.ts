@@ -642,6 +642,66 @@ async function getElementClickPoint(
     };
 }
 
+// Scroll an element into view using mouse wheel with human-like incremental scrolling
+async function scrollElementIntoView(
+    pageMouse: { wheel: (options: { deltaY: number }) => Promise<void> },
+    page: { evaluate: (fn: () => { viewportHeight: number; scrollY: number }) => Promise<{ viewportHeight: number; scrollY: number }> },
+    element: ElementHandle,
+): Promise<void> {
+    const box = await element.boundingBox();
+    if (!box) return;
+
+    // Get viewport info
+    const viewport = await page.evaluate(() => ({
+        viewportHeight: window.innerHeight,
+        scrollY: window.scrollY,
+    }));
+
+    const elementCenterY = box.y;
+    const viewportHeight = viewport.viewportHeight;
+
+    // Check if element is already reasonably visible (within 10%-90% of viewport)
+    const visibleTop = viewportHeight * 0.1;
+    const visibleBottom = viewportHeight * 0.9;
+    if (elementCenterY >= visibleTop && elementCenterY + box.height <= visibleBottom) {
+        return; // Already visible, no scroll needed
+    }
+
+    // Target position: bring element to a random spot in the upper-to-middle portion of viewport
+    // Not always center — humans stop scrolling when they can see the element
+    const targetViewportY = viewportHeight * (0.25 + Math.random() * 0.3); // Between 25%-55% of viewport
+    const totalDelta = elementCenterY - targetViewportY;
+
+    if (Math.abs(totalDelta) < 20) return; // Too small to bother
+
+    // Scroll direction
+    const direction = totalDelta > 0 ? 1 : -1;
+    const absDelta = Math.abs(totalDelta);
+
+    // Simulate mouse wheel in increments of 80-180px (like real wheel detents)
+    let scrolled = 0;
+    while (scrolled < absDelta) {
+        // Each wheel tick: 80-180px with Gaussian variance
+        const tickSize = Math.min(
+            humanDelay(120, 0.4), // Average ~120px per tick
+            absDelta - scrolled,  // Don't overshoot
+        );
+        const actualTick = Math.max(40, tickSize); // Minimum 40px per tick
+
+        await pageMouse.wheel({ deltaY: actualTick * direction });
+        scrolled += actualTick;
+
+        // Variable delay between wheel ticks (humans don't scroll at constant speed)
+        // Faster in the middle, slower at start and end
+        const progress = scrolled / absDelta;
+        const baseDelay = progress < 0.2 || progress > 0.8 ? 60 : 30; // Slower at edges
+        await sleep(humanDelay(baseDelay, 0.5));
+    }
+
+    // Small settling pause after scrolling stops
+    await sleep(humanDelay(150, 0.3));
+}
+
 // Track last known mouse position (starts roughly at center of viewport)
 let lastMouseX = 400;
 let lastMouseY = 300;
@@ -821,6 +881,9 @@ export const runWorkflow = defineTool({
 
                         const elementHandle = result.element;
 
+                        // Scroll element into view naturally before interaction
+                        await scrollElementIntoView(page.mouse, page, elementHandle);
+
                         // Natural mouse movement to element, then click
                         const center = await getElementClickPoint(elementHandle);
                         if (!center) {
@@ -858,6 +921,8 @@ export const runWorkflow = defineTool({
 
                             if (result) {
                                 const elementHandle = result.element;
+                                // Scroll element into view naturally before interaction
+                                await scrollElementIntoView(page.mouse, page, elementHandle);
                                 const center = await getElementClickPoint(elementHandle);
                                 if (center) {
                                     // Move mouse naturally to element, then click to focus
@@ -950,6 +1015,9 @@ export const runWorkflow = defineTool({
                         }
 
                         const elementHandle = result.element;
+
+                        // Scroll element into view naturally before interaction
+                        await scrollElementIntoView(page.mouse, page, elementHandle);
 
                         // Natural mouse movement to element for hover
                         const center = await getElementClickPoint(elementHandle);
