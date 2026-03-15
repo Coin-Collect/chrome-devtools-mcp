@@ -1419,22 +1419,13 @@ export const simulateWorkflow = defineTool({
                     });
 
                 } else if (step.action === 'nav') {
-                    // Show navigation banner without actually navigating
-                    await page.evaluate((url: string) => {
-                        const banner = document.createElement('div');
-                        banner.className = '__wf_sim_banner';
-                        banner.id = '__wf_sim_banner';
-                        banner.textContent = `🌐 NAVIGATE → ${url}`;
-                        document.body.appendChild(banner);
-                    }, actionValue);
+                    // Actually navigate to the URL
+                    response.appendResponseLine(`  🌐 Navigating to: ${actionValue}`);
+                    await page.goto(actionValue, { waitUntil: 'networkidle2' });
+                    await sleep(humanDelay(800, 0.3));
 
-                    response.appendResponseLine(`  🌐 Would navigate to: ${actionValue}`);
-                    await sleep(pauseDuration);
-
-                    await page.evaluate(() => {
-                        const banner = document.getElementById('__wf_sim_banner');
-                        if (banner) banner.remove();
-                    });
+                    // Re-inject cursor and simulation styles on the new page
+                    await injectSymbolicCursor(page);
 
                 } else if (step.action === 'wait') {
                     const waitMs = actionValue ? parseInt(actionValue, 10) : 1000;
