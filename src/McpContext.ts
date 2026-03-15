@@ -16,6 +16,7 @@ import {
   type ListenerMap,
   type UncaughtError,
 } from './PageCollector.js';
+import {applyStealthPatches} from './stealth.js';
 import type {DevTools} from './third_party/index.js';
 import type {
   Browser,
@@ -445,6 +446,9 @@ export class McpContext implements Context {
   selectPage(newPage: McpPage): void {
     this.#selectedPage = newPage;
     this.#updateSelectedPageTimeouts();
+    void applyStealthPatches(newPage).catch((error: unknown) => {
+      this.logger('Error applying stealth patches', error);
+    });
   }
 
   #updateSelectedPageTimeouts() {
