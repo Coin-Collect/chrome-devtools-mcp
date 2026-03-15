@@ -598,10 +598,17 @@ async function moveMouseNaturally(
 
         const point = cubicBezier(easedT, start, cp1, cp2, end);
 
-        // Add micro-jitter to simulate hand tremor (very subtle)
-        const jitter = distance > 50 ? 0.5 : 0;
-        const jitterX = jitter > 0 ? gaussianRandom(0, jitter) : 0;
-        const jitterY = jitter > 0 ? gaussianRandom(0, jitter) : 0;
+        // Dynamic micro-jitter: intensity varies by movement phase and distance
+        // - Stronger in the middle of movement (hand vibration at speed)
+        // - Weaker at start (initial aim) and near target (precision phase)
+        // - Scales with total distance (longer moves = more hand instability)
+        const phaseMultiplier = Math.sin(Math.PI * rawT); // 0 at edges, 1 at middle
+        const distanceScale = Math.min(distance / 300, 1); // Caps at 300px
+        const baseJitter = 0.3 + distanceScale * 1.2; // 0.3px to 1.5px base
+        const jitterIntensity = baseJitter * phaseMultiplier;
+
+        const jitterX = jitterIntensity > 0.1 ? gaussianRandom(0, jitterIntensity) : 0;
+        const jitterY = jitterIntensity > 0.1 ? gaussianRandom(0, jitterIntensity) : 0;
 
         await pageMouse.move(
             Math.round(point.x + jitterX),
@@ -609,7 +616,13 @@ async function moveMouseNaturally(
         );
 
         // Variable delay per step with slight randomness
-        const delay = stepDuration * (0.8 + Math.random() * 0.4);
+        let delay = stepDuration * (0.8 + Math.random() * 0.4);
+
+        // Occasional micro-pause: hand micro-correction (~3% chance)
+        if (Math.random() < 0.03 && rawT > 0.2 && rawT < 0.8) {
+            delay += humanDelay(40, 0.5);
+        }
+
         await sleep(delay);
     }
 
