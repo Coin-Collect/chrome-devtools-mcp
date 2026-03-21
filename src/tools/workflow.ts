@@ -7,6 +7,7 @@
 
 import { supabase } from '../supabase.js';
 import { zod } from '../third_party/index.js';
+import type { KeyInput } from '../third_party/index.js';
 
 import { ToolCategory } from './categories.js';
 import { defineTool } from './ToolDefinition.js';
@@ -831,16 +832,150 @@ async function findElementByStrategies(
     return null;
 }
 
+// Keyboard layout for adjacent key typo simulation
+const ADJACENT_KEYS: Record<string, string[]> = {
+    q: ['w', 'a'], w: ['q', 'e', 's', 'a'], e: ['w', 'r', 'd', 's'],
+    r: ['e', 't', 'f', 'd'], t: ['r', 'y', 'g', 'f'], y: ['t', 'u', 'h', 'g'],
+    u: ['y', 'i', 'j', 'h'], i: ['u', 'o', 'k', 'j'], o: ['i', 'p', 'l', 'k'],
+    p: ['o', 'l'], a: ['q', 'w', 's', 'z'], s: ['a', 'w', 'e', 'd', 'z', 'x'],
+    d: ['s', 'e', 'r', 'f', 'x', 'c'], f: ['d', 'r', 't', 'g', 'c', 'v'],
+    g: ['f', 't', 'y', 'h', 'v', 'b'], h: ['g', 'y', 'u', 'j', 'b', 'n'],
+    j: ['h', 'u', 'i', 'k', 'n', 'm'], k: ['j', 'i', 'o', 'l', 'm'],
+    l: ['k', 'o', 'p'], z: ['a', 's', 'x'], x: ['z', 's', 'd', 'c'],
+    c: ['x', 'd', 'f', 'v'], v: ['c', 'f', 'g', 'b'], b: ['v', 'g', 'h', 'n'],
+    n: ['b', 'h', 'j', 'm'], m: ['n', 'j', 'k'],
+    '1': ['2', 'q'], '2': ['1', '3', 'w'], '3': ['2', '4', 'e'],
+    '4': ['3', '5', 'r'], '5': ['4', '6', 't'], '6': ['5', '7', 'y'],
+    '7': ['6', '8', 'u'], '8': ['7', '9', 'i'], '9': ['8', '0', 'o'],
+    '0': ['9', 'p'],
+};
+
+function getAdjacentTypo(char: string): string | null {
+    const lower = char.toLowerCase();
+    const adjacents = ADJACENT_KEYS[lower];
+    if (!adjacents || adjacents.length === 0) return null;
+    const typo = adjacents[Math.floor(Math.random() * adjacents.length)];
+    // Preserve case
+    return char === char.toUpperCase() && char !== char.toLowerCase()
+        ? typo.toUpperCase()
+        : typo;
+}
+
+// Key hold duration: time between keydown and keyup (60-120ms typical)
+function getKeyHoldDuration(): number {
+    return Math.max(40, Math.floor(gaussianRandom(85, 18)));
+}
+
+// Inter-key delay: time between releasing one key and pressing the next
+// Average ~55 WPM ≈ ~220ms per character including hold time
+function getInterKeyDelay(prevChar: string, nextChar: string): number {
+    let base = 100; // Base inter-key gap in ms
+
+    // Space after a word — slightly faster (finger is already on spacebar)
+    if (nextChar === ' ') {
+        base = 70;
+    }
+    // After space — brief pause starting a new word
+    else if (prevChar === ' ') {
+        base = 120;
+    }
+    // Same key repeated — slightly slower (double-tap)
+    else if (prevChar.toLowerCase() === nextChar.toLowerCase()) {
+        base = 140;
+    }
+
+    return Math.max(30, Math.floor(gaussianRandom(base, base * 0.35)));
+}
+
+interface RealisticKeyboard {
+    down: (key: KeyInput) => Promise<void>;
+    up: (key: KeyInput) => Promise<void>;
+}
+
 async function typeHumanLike(
-    page: { keyboard: { type: (char: string) => Promise<void> } },
+    keyboard: RealisticKeyboard,
     text: string,
 ): Promise<void> {
-    for (const char of text) {
-        await sleep(getTypingDelay());
-        await page.keyboard.type(char);
-        await sleep(getMicroPause());
+    const TYPO_RATE = 0.04; // 4% chance of typo per character
+
+    let prevChar = '';
+
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+
+        // Inter-key delay (skip for first character)
+        if (i > 0) {
+            const interDelay = getInterKeyDelay(prevChar, char);
+            await sleep(interDelay);
+        }
+
+        // Word boundary micro-pause: ~15% chance of a longer "thinking" pause after space
+        if (prevChar === ' ' && Math.random() < 0.15) {
+            await sleep(humanDelay(250, 0.5));
+        }
+
+        // Typo simulation: occasionally type a wrong adjacent key
+        const isAlphanumeric = /[a-zA-Z0-9]/.test(char);
+        if (isAlphanumeric && Math.random() < TYPO_RATE) {
+            const typoChar = getAdjacentTypo(char);
+            if (typoChar) {
+                // Type the wrong key
+                await pressKey(keyboard, typoChar as KeyInput);
+
+                // Pause to "notice" the mistake (150-500ms)
+                await sleep(humanDelay(300, 0.4));
+
+                // Backspace to delete the typo
+                await keyboard.down('Backspace' as KeyInput);
+                await sleep(getKeyHoldDuration());
+                await keyboard.up('Backspace' as KeyInput);
+
+                // Short pause before retyping
+                await sleep(humanDelay(80, 0.3));
+
+                // Now type the correct key
+                await pressKey(keyboard, char as KeyInput);
+                prevChar = char;
+                continue;
+            }
+        }
+
+        // Normal key press
+        await pressKey(keyboard, char as KeyInput);
+        prevChar = char;
     }
 }
+
+// Press a single character with proper keydown/keyup timing and shift handling
+async function pressKey(
+    keyboard: RealisticKeyboard,
+    char: KeyInput,
+): Promise<void> {
+    const isUpperCase = char !== char.toLowerCase() && char === char.toUpperCase();
+    const isShiftSymbol = '~!@#$%^&*()_+{}|:"<>?'.includes(char);
+    const needsShift = isUpperCase || isShiftSymbol;
+
+    if (needsShift) {
+        // Press Shift first
+        await keyboard.down('ShiftLeft' as KeyInput);
+        // Small delay between shift down and key down (30-70ms)
+        await sleep(Math.max(20, Math.floor(gaussianRandom(45, 12))));
+    }
+
+    // Key down
+    await keyboard.down(char);
+    // Hold the key
+    await sleep(getKeyHoldDuration());
+    // Key up
+    await keyboard.up(char);
+
+    if (needsShift) {
+        // Small delay before releasing shift (20-50ms)
+        await sleep(Math.max(15, Math.floor(gaussianRandom(35, 10))));
+        await keyboard.up('ShiftLeft' as KeyInput);
+    }
+}
+
 
 const VARIABLE_PATTERN = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g;
 
@@ -1028,10 +1163,12 @@ export const runWorkflow = defineTool({
                             }
                         }
 
-                        // Type with human-like rhythm
-                        // Note: page.keyboard.type is not tied to a specific element handle, so we execute it on page.
+                        // Focus-to-first-keystroke delay: natural pause after clicking before typing
+                        await sleep(humanDelay(450, 0.4));
+
+                        // Type with realistic human-like rhythm using keyboard.down/up
                         await typeHumanLike(
-                            page as unknown as { keyboard: { type: (char: string) => Promise<void> } },
+                            page.keyboard,
                             actionValue,
                         );
 
