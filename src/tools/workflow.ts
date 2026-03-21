@@ -692,28 +692,53 @@ async function scrollElementIntoView(
     const direction = totalDelta > 0 ? 1 : -1;
     const absDelta = Math.abs(totalDelta);
 
-    // Simulate mouse wheel in increments of 80-180px (like real wheel detents)
+    // Simulate mouse wheel with momentum physics
+    // Phase 1: Active scrolling — strong impulses with variable deltaY
     let scrolled = 0;
-    while (scrolled < absDelta) {
-        // Each wheel tick: 80-180px with Gaussian variance
+    const impulseCount = Math.max(3, Math.ceil(absDelta / 150)); // Number of active scroll ticks
+    const impulseDistance = absDelta * 0.75; // Cover ~75% with active impulses
+    let velocity = 0;
+
+    for (let i = 0; i < impulseCount && scrolled < impulseDistance; i++) {
+        // Variable deltaY per tick: 80-180px with Gaussian distribution
         const tickSize = Math.min(
-            humanDelay(120, 0.4), // Average ~120px per tick
-            absDelta - scrolled,  // Don't overshoot
+            Math.max(60, Math.floor(gaussianRandom(130, 30))),
+            absDelta - scrolled,
         );
-        const actualTick = Math.max(40, tickSize); // Minimum 40px per tick
 
-        await pageMouse.wheel({ deltaY: actualTick * direction });
-        scrolled += actualTick;
+        await pageMouse.wheel({ deltaY: tickSize * direction });
+        scrolled += tickSize;
+        velocity = tickSize; // Track last impulse for momentum
 
-        // Variable delay between wheel ticks (humans don't scroll at constant speed)
-        // Faster in the middle, slower at start and end
-        const progress = scrolled / absDelta;
-        const baseDelay = progress < 0.2 || progress > 0.8 ? 60 : 30; // Slower at edges
-        await sleep(humanDelay(baseDelay, 0.5));
+        // Inter-tick delay: faster in the middle, slower at start
+        const phase = i / impulseCount;
+        const tickDelay = phase < 0.15 ? humanDelay(50, 0.4) : humanDelay(25, 0.5);
+        await sleep(tickDelay);
+    }
+
+    // Phase 2: Momentum deceleration — wheel bleeds off speed naturally
+    const friction = 0.92; // Deceleration per tick
+    velocity = velocity * 0.6; // Initial momentum is weaker than active scrolling
+
+    while (velocity > 8 && scrolled < absDelta) {
+        const momentumTick = Math.min(
+            Math.round(velocity),
+            absDelta - scrolled,
+        );
+
+        if (momentumTick < 3) break;
+
+        await pageMouse.wheel({ deltaY: momentumTick * direction });
+        scrolled += momentumTick;
+
+        velocity *= friction;
+
+        // Momentum ticks get slower as energy dissipates
+        await sleep(humanDelay(35, 0.3));
     }
 
     // Small settling pause after scrolling stops
-    await sleep(humanDelay(150, 0.3));
+    await sleep(humanDelay(180, 0.3));
 }
 
 // Track last known mouse position (starts roughly at center of viewport)
@@ -1121,8 +1146,13 @@ export const runWorkflow = defineTool({
                             lastMouseX = center.x;
                             lastMouseY = center.y;
 
-                            await sleep(humanDelay(120, 0.3)); // Brief pause before click
-                            await page.mouse.click(center.x, center.y);
+                            // Hover dwell: user reads/confirms before clicking (100-300ms)
+                            await sleep(humanDelay(180, 0.4));
+
+                            // Natural mousedown → hold → mouseup
+                            await page.mouse.down();
+                            await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25)))); // Hold 50-150ms
+                            await page.mouse.up();
                         });
 
                         executionResults.push({ step: step.step_order, action: 'click', success: true, details: `Clicked using ${result.usedStrategy.type}` });
@@ -1156,8 +1186,12 @@ export const runWorkflow = defineTool({
                                     lastMouseY = center.y;
 
                                     await context.waitForEventsAfterAction(async () => {
-                                        await page.mouse.click(center.x, center.y);
-                                        await sleep(humanDelay(150, 0.3));
+                                        // Hover dwell before focus click
+                                        await sleep(humanDelay(140, 0.4));
+                                        await page.mouse.down();
+                                        await sleep(Math.max(50, Math.floor(gaussianRandom(95, 20))));
+                                        await page.mouse.up();
+                                        await sleep(humanDelay(100, 0.3));
                                     });
                                 }
                             }
