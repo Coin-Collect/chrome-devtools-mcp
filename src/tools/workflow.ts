@@ -1792,3 +1792,135 @@ export const typeLikeHuman = defineTool({
         }
     },
 });
+
+export const clickAtLikeHuman = defineTool({
+    name: 'click_at_like_human',
+    description: 'Clicks at the provided coordinates with fully realistic human behavior: moves the cursor along a natural Bezier curve path from its current position to the target coordinates, hovers briefly, then performs a mousedown/mouseup with natural hold timing. A symbolic cursor is displayed during the interaction. NOTE: Unless otherwise specified, prefer this tool over the standard click_at tool.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        x: zod.number().describe('The x coordinate'),
+        y: zod.number().describe('The y coordinate'),
+    },
+    handler: async (request, response, context) => {
+        const page = context.getSelectedPage();
+        const { x, y } = request.params;
+
+        await injectSymbolicCursor(page);
+
+        // Add slight human imprecision to coordinates
+        const targetX = x + gaussianRandom(0, 1.5);
+        const targetY = y + gaussianRandom(0, 1.5);
+
+        // Move mouse naturally along a Bezier curve
+        await moveMouseNaturally(
+            page.mouse,
+            lastMouseX, lastMouseY,
+            targetX, targetY,
+        );
+        lastMouseX = targetX;
+        lastMouseY = targetY;
+
+        // Hover dwell: user confirms before clicking
+        await sleep(humanDelay(180, 0.4));
+
+        // Natural mousedown → hold → mouseup
+        await context.waitForEventsAfterAction(async () => {
+            await page.mouse.down();
+            await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
+            await page.mouse.up();
+        });
+
+        await removeSymbolicCursor(page);
+
+        response.appendResponseLine(`Successfully clicked at (${Math.round(targetX)}, ${Math.round(targetY)}) with human-like behavior.`);
+    },
+});
+
+export const dragLikeHuman = defineTool({
+    name: 'drag_like_human',
+    description: 'Drags an element onto another element with fully realistic human behavior: scrolls the source element into view, moves the cursor naturally to it, picks it up with a natural mousedown hold, then moves the cursor along a Bezier curve to the drop target and releases with mouseup. Includes pickup pause, natural trajectory, and drop settling. NOTE: Unless otherwise specified, prefer this tool over the standard drag tool.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        from_uid: zod.string().describe('The uid of the element to drag'),
+        to_uid: zod.string().describe('The uid of the element to drop into'),
+    },
+    handler: async (request, response, context) => {
+        const page = context.getSelectedPage();
+        const fromHandle = await context.getElementByUid(request.params.from_uid);
+        const toHandle = await context.getElementByUid(request.params.to_uid);
+
+        try {
+            await injectSymbolicCursor(page);
+
+            // Scroll source element into view
+            await scrollElementIntoView(page.mouse, page, fromHandle);
+
+            // Get click point on source element
+            const fromPoint = await getElementClickPoint(fromHandle);
+            if (!fromPoint) {
+                throw new Error('Could not determine source element position');
+            }
+
+            // Move mouse naturally to source element
+            await moveMouseNaturally(
+                page.mouse,
+                lastMouseX, lastMouseY,
+                fromPoint.x, fromPoint.y,
+            );
+            lastMouseX = fromPoint.x;
+            lastMouseY = fromPoint.y;
+
+            // Hover briefly before picking up
+            await sleep(humanDelay(200, 0.4));
+
+            // Mousedown to pick up — slightly longer hold than a click
+            await page.mouse.down();
+            await sleep(humanDelay(180, 0.3)); // Pickup pause: user grabs and holds
+
+            // Scroll target into view if needed
+            await scrollElementIntoView(page.mouse, page, toHandle);
+
+            // Get drop point on target element
+            const toPoint = await getElementClickPoint(toHandle);
+            if (!toPoint) {
+                await page.mouse.up();
+                throw new Error('Could not determine target element position');
+            }
+
+            // Move mouse naturally to drop target while holding
+            await moveMouseNaturally(
+                page.mouse,
+                lastMouseX, lastMouseY,
+                toPoint.x, toPoint.y,
+            );
+            lastMouseX = toPoint.x;
+            lastMouseY = toPoint.y;
+
+            // Brief hover over drop target before releasing
+            await sleep(humanDelay(150, 0.3));
+
+            // Release: mouseup to drop
+            await page.mouse.up();
+
+            // Settling pause after drop
+            await sleep(humanDelay(200, 0.3));
+
+            await removeSymbolicCursor(page);
+
+            response.appendResponseLine('Successfully dragged element with human-like behavior.');
+        } catch (error) {
+            await removeSymbolicCursor(page);
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to drag element: ${message}`);
+        } finally {
+            void fromHandle.dispose();
+            void toHandle.dispose();
+        }
+    },
+});
