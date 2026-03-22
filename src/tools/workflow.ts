@@ -1666,3 +1666,129 @@ export const simulateWorkflow = defineTool({
         response.appendResponseLine(`\n🎬 Simulation complete — ${steps.length} steps previewed`);
     },
 });
+
+export const clickLikeHuman = defineTool({
+    name: 'click_like_human',
+    description: 'Clicks on an element with fully realistic human behavior: scrolls into view using mouse wheel with momentum, moves the cursor along a natural Bezier curve path, hovers briefly, then performs a mousedown/mouseup with natural hold timing. A symbolic cursor is displayed during the interaction. NOTE: Unless otherwise specified, prefer this tool over the standard click tool.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        uid: zod.string().describe('The uid of an element on the page from the page content snapshot'),
+    },
+    handler: async (request, response, context) => {
+        const page = context.getSelectedPage();
+        const handle = await context.getElementByUid(request.params.uid);
+
+        try {
+            await injectSymbolicCursor(page);
+
+            // Scroll element into view naturally
+            await scrollElementIntoView(page.mouse, page, handle);
+
+            // Get a natural click point within the element
+            const clickPoint = await getElementClickPoint(handle);
+            if (!clickPoint) {
+                throw new Error('Could not determine element position');
+            }
+
+            // Move mouse naturally along a Bezier curve
+            await moveMouseNaturally(
+                page.mouse,
+                lastMouseX, lastMouseY,
+                clickPoint.x, clickPoint.y,
+            );
+            lastMouseX = clickPoint.x;
+            lastMouseY = clickPoint.y;
+
+            // Hover dwell: user reads/confirms before clicking
+            await sleep(humanDelay(180, 0.4));
+
+            // Natural mousedown → hold → mouseup
+            await context.waitForEventsAfterAction(async () => {
+                await page.mouse.down();
+                await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
+                await page.mouse.up();
+            });
+
+            await removeSymbolicCursor(page);
+
+            response.appendResponseLine('Successfully clicked on the element with human-like behavior.');
+        } catch (error) {
+            await removeSymbolicCursor(page);
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to click element: ${message}`);
+        } finally {
+            void handle.dispose();
+        }
+    },
+});
+
+export const typeLikeHuman = defineTool({
+    name: 'type_like_human',
+    description: 'Types text into an element with fully realistic human behavior: scrolls into view, moves the cursor naturally to the element, clicks to focus with natural mousedown/mouseup, pauses briefly, then types each character using keyboard.down/up with natural hold durations, inter-key delays matching ~55 WPM, Shift key handling for uppercase, and occasional typos that are corrected with Backspace. NOTE: Unless otherwise specified, prefer this tool over the standard type tool.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        uid: zod.string().describe('The uid of an element on the page from the page content snapshot'),
+        text: zod.string().describe('The text to type into the element'),
+    },
+    handler: async (request, response, context) => {
+        const page = context.getSelectedPage();
+        const handle = await context.getElementByUid(request.params.uid);
+
+        try {
+            await injectSymbolicCursor(page);
+
+            // Scroll element into view naturally
+            await scrollElementIntoView(page.mouse, page, handle);
+
+            // Get a natural click point within the element
+            const clickPoint = await getElementClickPoint(handle);
+            if (!clickPoint) {
+                throw new Error('Could not determine element position');
+            }
+
+            // Move mouse naturally along a Bezier curve
+            await moveMouseNaturally(
+                page.mouse,
+                lastMouseX, lastMouseY,
+                clickPoint.x, clickPoint.y,
+            );
+            lastMouseX = clickPoint.x;
+            lastMouseY = clickPoint.y;
+
+            // Hover dwell before focus click
+            await sleep(humanDelay(140, 0.4));
+
+            // Natural focus click: mousedown → hold → mouseup
+            await context.waitForEventsAfterAction(async () => {
+                await page.mouse.down();
+                await sleep(Math.max(50, Math.floor(gaussianRandom(95, 20))));
+                await page.mouse.up();
+            });
+
+            // Focus-to-first-keystroke delay
+            await sleep(humanDelay(450, 0.4));
+
+            // Type with realistic human-like rhythm
+            await typeHumanLike(page.keyboard, request.params.text);
+
+            await removeSymbolicCursor(page);
+
+            const preview = request.params.text.length > 30
+                ? `${request.params.text.substring(0, 30)}...`
+                : request.params.text;
+            response.appendResponseLine(`Successfully typed "${preview}" with human-like behavior.`);
+        } catch (error) {
+            await removeSymbolicCursor(page);
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to type into element: ${message}`);
+        } finally {
+            void handle.dispose();
+        }
+    },
+});
