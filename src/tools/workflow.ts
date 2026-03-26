@@ -5,9 +5,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
 import { supabase } from '../supabase.js';
 import { zod } from '../third_party/index.js';
 import type { KeyInput } from '../third_party/index.js';
+import { checkNavigationSecurity, validateWhitelistAddition } from '../utils/security.js';
 
 import { ToolCategory } from './categories.js';
 import { defineTool } from './ToolDefinition.js';
@@ -456,6 +460,42 @@ export const addWorkflowStep = defineTool({
             response.appendResponseLine(`Selector strategies count: ${selectorsData.strategies.length}`);
         } else {
             response.appendResponseLine(`No selectors (element not required for this action)`);
+        }
+    },
+});
+
+export const addUrlToWhitelist = defineTool({
+    name: 'add_url_to_whitelist',
+    description: 'Adds a URL or domain to the whitelist.json file to allow navigation.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        url: zod.string().describe('The URL or domain to add to the whitelist, e.g., "google.com" or "https://api.github.com"'),
+    },
+    handler: async (request, response) => {
+        const { url } = request.params;
+        const hostname = validateWhitelistAddition(url);
+
+        const whitelistPath = path.resolve(process.cwd(), 'whitelist.json');
+        let whitelist: string[] = [];
+        try {
+            const data = await fs.readFile(whitelistPath, 'utf8');
+            whitelist = JSON.parse(data);
+            if (!Array.isArray(whitelist)) {
+                whitelist = [];
+            }
+        } catch (e) {
+            // File doesn't exist or is invalid, start fresh
+        }
+
+        if (!whitelist.includes(hostname)) {
+            whitelist.push(hostname);
+            await fs.writeFile(whitelistPath, JSON.stringify(whitelist, null, 2), 'utf8');
+            response.appendResponseLine(`Added ${hostname} to whitelist by creating or updating whitelist.json.`);
+        } else {
+            response.appendResponseLine(`${hostname} is already in the whitelist.json.`);
         }
     },
 });
@@ -1308,6 +1348,8 @@ export const runWorkflow = defineTool({
                         if (!actionValue) {
                             throw new Error('No URL provided for nav action');
                         }
+
+                        await checkNavigationSecurity(actionValue);
 
                         response.appendResponseLine(`  Navigating to: ${actionValue}`);
 
