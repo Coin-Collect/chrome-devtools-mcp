@@ -1013,6 +1013,70 @@ function resolveVariables(
     });
 }
 
+async function withPulseFrame<T>(page: ReturnType<Context['getSelectedPage']>, actionFn: () => Promise<T>): Promise<T> {
+    let client: any;
+    try {
+        client = await page.createCDPSession();
+        await client.send('Input.setIgnoreInputEvents', { ignore: true });
+    } catch (e) {
+        // Ignore CDP setup failure
+    }
+
+    try {
+        await page.evaluate(() => {
+            if (!document.getElementById('__wf_pulse_style')) {
+                const style = document.createElement('style');
+                style.id = '__wf_pulse_style';
+                style.textContent = `
+                  @keyframes __wf_pulse {
+                    0% { box-shadow: inset 0 0 0 0 rgba(239, 68, 68, 0.4); border-color: rgba(239, 68, 68, 0.4); }
+                    50% { box-shadow: inset 0 0 20px 5px rgba(239, 68, 68, 0.8); border-color: rgba(239, 68, 68, 1); }
+                    100% { box-shadow: inset 0 0 0 0 rgba(239, 68, 68, 0.4); border-color: rgba(239, 68, 68, 0.4); }
+                  }
+                `;
+                document.head.appendChild(style);
+            }
+            
+            let overlay = document.getElementById('__wf_pulse_overlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = '__wf_pulse_overlay';
+                overlay.style.position = 'fixed';
+                overlay.style.top = '0';
+                overlay.style.left = '0';
+                overlay.style.width = '100vw';
+                overlay.style.height = '100vh';
+                overlay.style.pointerEvents = 'none';
+                overlay.style.zIndex = '2147483647';
+                overlay.style.boxSizing = 'border-box';
+                overlay.style.border = '5px solid rgba(239, 68, 68, 0.8)';
+                overlay.style.animation = '__wf_pulse 1.5s infinite';
+                document.body.appendChild(overlay);
+            }
+        });
+    } catch (e) {
+        // Ignore injection failure (e.g. context destroyed)
+    }
+
+    try {
+        return await actionFn();
+    } finally {
+        try {
+            await page.evaluate(() => {
+                const overlay = document.getElementById('__wf_pulse_overlay');
+                if (overlay) overlay.remove();
+            });
+        } catch (e) {}
+
+        if (client) {
+            try {
+                await client.send('Input.setIgnoreInputEvents', { ignore: false });
+                await client.detach();
+            } catch (e) {}
+        }
+    }
+}
+
 export const runWorkflow = defineTool({
     name: 'run_workflow',
     description: 'Runs a workflow or a specific step. Executes actions with human-like timing and robust selector fallbacks. Use {{variable_name}} in action_value and pass runtime values via the variables parameter.',
@@ -1026,8 +1090,10 @@ export const runWorkflow = defineTool({
         variables: zod.record(zod.string(), zod.string()).optional().describe('Key-value pairs to resolve {{variable_name}} placeholders in action_value fields. Example: {"username": "john", "password": "secret"}'),
     },
     handler: async (request, response, context) => {
-        const { workflow_id, step_order, variables } = request.params;
-        const vars: Record<string, string> = variables || {};
+        const page = context.getSelectedPage();
+        return withPulseFrame(page, async () => {
+            const { workflow_id, step_order, variables } = request.params;
+            const vars: Record<string, string> = variables || {};
 
         // Fetch workflow and steps
         let query = supabase
@@ -1410,6 +1476,7 @@ export const runWorkflow = defineTool({
         response.appendResponseLine(`Total steps: ${executionResults.length}`);
         response.appendResponseLine(`Successful: ${successCount}`);
         response.appendResponseLine(`Failed: ${executionResults.length - successCount}`);
+        });
     },
 });
 
@@ -1679,7 +1746,8 @@ export const clickLikeHuman = defineTool({
     },
     handler: async (request, response, context) => {
         const page = context.getSelectedPage();
-        const handle = await context.getElementByUid(request.params.uid);
+        return withPulseFrame(page, async () => {
+            const handle = await context.getElementByUid(request.params.uid);
 
         try {
             await injectSymbolicCursor(page);
@@ -1722,6 +1790,7 @@ export const clickLikeHuman = defineTool({
         } finally {
             void handle.dispose();
         }
+        });
     },
 });
 
@@ -1738,7 +1807,8 @@ export const typeLikeHuman = defineTool({
     },
     handler: async (request, response, context) => {
         const page = context.getSelectedPage();
-        const handle = await context.getElementByUid(request.params.uid);
+        return withPulseFrame(page, async () => {
+            const handle = await context.getElementByUid(request.params.uid);
 
         try {
             await injectSymbolicCursor(page);
@@ -1790,6 +1860,7 @@ export const typeLikeHuman = defineTool({
         } finally {
             void handle.dispose();
         }
+        });
     },
 });
 
@@ -1806,7 +1877,8 @@ export const clickAtLikeHuman = defineTool({
     },
     handler: async (request, response, context) => {
         const page = context.getSelectedPage();
-        const { x, y } = request.params;
+        return withPulseFrame(page, async () => {
+            const { x, y } = request.params;
 
         await injectSymbolicCursor(page);
 
@@ -1836,6 +1908,7 @@ export const clickAtLikeHuman = defineTool({
         await removeSymbolicCursor(page);
 
         response.appendResponseLine(`Successfully clicked at (${Math.round(targetX)}, ${Math.round(targetY)}) with human-like behavior.`);
+        });
     },
 });
 
