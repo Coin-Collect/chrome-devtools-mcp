@@ -15,6 +15,7 @@ import {
   defineTool,
   timeoutSchema,
 } from './ToolDefinition.js';
+import {checkNavigationSecurity} from '../utils/security.js';
 
 export const listPages = defineTool(args => {
   return {
@@ -119,6 +120,8 @@ export const newPage = defineTool({
       request.params.isolatedContext,
     );
 
+    await checkNavigationSecurity(request.params.url);
+
     await page.waitForEventsAfterAction(
       async () => {
         await page.pptrPage.goto(request.params.url, {
@@ -215,6 +218,7 @@ export const navigatePage = definePageTool({
                   'A URL is required for navigation of type=url.',
                 );
               }
+              await checkNavigationSecurity(request.params.url);
               try {
                 await page.pptrPage.goto(request.params.url, options);
                 response.appendResponseLine(
