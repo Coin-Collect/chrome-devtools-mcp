@@ -13,19 +13,24 @@ export async function checkNavigationSecurity(urlString: string): Promise<void> 
     try {
         url = new URL(urlString);
     } catch (e) {
-        throw new Error(`Güvenlik ihlali: Geçersiz URL adresi (${urlString}).`);
+        throw new Error(`Security Violation: Invalid URL format (${urlString}).`);
+    }
+
+    const forbiddenProtocols = ['file:', 'javascript:', 'data:', 'chrome:'];
+    if (forbiddenProtocols.includes(url.protocol)) {
+        throw new Error(`Security Violation: Navigation to '${url.protocol}' protocols is strictly forbidden.`);
     }
 
     if (url.protocol !== 'https:') {
-        throw new Error(`Güvenlik ihlali: Sadece https protokolüne izin verilmektedir (${url.protocol}).`);
+        throw new Error(`Security Violation: Only 'https:' protocol is allowed (${url.protocol}).`);
     }
 
     if (net.isIP(url.hostname)) {
-        throw new Error(`Güvenlik ihlali: IP adresi kullanılmasına izin verilmemektedir (${url.hostname}).`);
+        throw new Error(`Security Violation: IP addresses are not allowed (${url.hostname}).`);
     }
 
     if (url.hostname === 'localhost' || url.hostname === '[::1]') {
-        throw new Error(`Güvenlik ihlali: Localhost adreslerine gidilmesine izin verilmemektedir (${url.hostname}).`);
+        throw new Error(`Security Violation: Navigating to localhost is not allowed (${url.hostname}).`);
     }
 
     const whitelistPath = path.resolve(process.cwd(), 'whitelist.json');
@@ -43,7 +48,7 @@ export async function checkNavigationSecurity(urlString: string): Promise<void> 
     );
 
     if (!isAllowed) {
-        throw new Error(`Güvenlik ihlali: Adres whitelist.json dosyasında bulunmuyor (${url.hostname}).`);
+        throw new Error(`Security Violation: The address was not found in whitelist.json (${url.hostname}).`);
     }
 }
 
@@ -56,19 +61,19 @@ export function validateWhitelistAddition(urlString: string): string {
         }
         url = new URL(urlToParse);
     } catch {
-        throw new Error(`Geçersiz URL formatı: ${urlString}`);
+        throw new Error(`Invalid URL format: ${urlString}`);
     }
 
     if (urlString.startsWith('http://')) {
-        throw new Error(`Güvenlik ihlali: Whitelist'e eklenen adresler (eğer belirtiliyorsa) https olmalıdır.`);
+        throw new Error(`Security Violation: URLs added to the whitelist (if specified) must use https.`);
     }
 
     if (net.isIP(url.hostname)) {
-        throw new Error(`Güvenlik ihlali: IP adresleri whitelist.json dosyasına eklenemez (${url.hostname}).`);
+        throw new Error(`Security Violation: IP addresses cannot be added to whitelist.json (${url.hostname}).`);
     }
 
     if (url.hostname === 'localhost' || url.hostname === '[::1]') {
-        throw new Error(`Güvenlik ihlali: Localhost whitelist.json dosyasına eklenemez (${url.hostname}).`);
+        throw new Error(`Security Violation: Localhost cannot be added to whitelist.json (${url.hostname}).`);
     }
     
     return url.hostname;
