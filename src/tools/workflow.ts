@@ -1054,14 +1054,6 @@ function resolveVariables(
 }
 
 async function withPulseFrame<T>(page: ReturnType<Context['getSelectedPage']>, actionFn: () => Promise<T>): Promise<T> {
-    let client: any;
-    try {
-        client = await page.createCDPSession();
-        await client.send('Input.setIgnoreInputEvents', { ignore: true });
-    } catch (e) {
-        // Ignore CDP setup failure
-    }
-
     try {
         await page.evaluate(() => {
             if (!document.getElementById('__wf_pulse_style')) {
@@ -1076,7 +1068,7 @@ async function withPulseFrame<T>(page: ReturnType<Context['getSelectedPage']>, a
                 `;
                 document.head.appendChild(style);
             }
-            
+
             let overlay = document.getElementById('__wf_pulse_overlay');
             if (!overlay) {
                 overlay = document.createElement('div');
@@ -1087,7 +1079,7 @@ async function withPulseFrame<T>(page: ReturnType<Context['getSelectedPage']>, a
                 overlay.style.width = '100vw';
                 overlay.style.height = '100vh';
                 overlay.style.pointerEvents = 'none';
-                overlay.style.zIndex = '2147483647';
+                overlay.style.zIndex = '2147483646';
                 overlay.style.boxSizing = 'border-box';
                 overlay.style.border = '5px solid rgba(239, 68, 68, 0.8)';
                 overlay.style.animation = '__wf_pulse 1.5s infinite';
@@ -1105,14 +1097,11 @@ async function withPulseFrame<T>(page: ReturnType<Context['getSelectedPage']>, a
             await page.evaluate(() => {
                 const overlay = document.getElementById('__wf_pulse_overlay');
                 if (overlay) overlay.remove();
+                const style = document.getElementById('__wf_pulse_style');
+                if (style) style.remove();
             });
-        } catch (e) {}
-
-        if (client) {
-            try {
-                await client.send('Input.setIgnoreInputEvents', { ignore: false });
-                await client.detach();
-            } catch (e) {}
+        } catch (e) {
+            // Ignore cleanup failure
         }
     }
 }
@@ -1135,34 +1124,33 @@ export const runWorkflow = defineTool({
             const { workflow_id, step_order, variables } = request.params;
             const vars: Record<string, string> = variables || {};
 
-        // Fetch workflow and steps
-        let query = supabase
-            .from('workflow_steps')
-            .select('*')
-            .eq('workflow_id', workflow_id)
-            .order('step_order', { ascending: true });
+            // Fetch workflow and steps
+            let query = supabase
+                .from('workflow_steps')
+                .select('*')
+                .eq('workflow_id', workflow_id)
+                .order('step_order', { ascending: true });
 
-        if (step_order !== undefined) {
-            query = query.eq('step_order', step_order);
-        }
+            if (step_order !== undefined) {
+                query = query.eq('step_order', step_order);
+            }
 
-        const { data: steps, error } = await query;
+            const { data: steps, error } = await query;
 
-        if (error) {
-            throw new Error(`Failed to fetch workflow steps: ${error.message}`);
-        }
+            if (error) {
+                throw new Error(`Failed to fetch workflow steps: ${error.message}`);
+            }
 
-        if (!steps || steps.length === 0) {
-            response.appendResponseLine(
-                step_order !== undefined
-                    ? `No step found with order ${step_order} in workflow ${workflow_id}`
-                    : `No steps found for workflow ${workflow_id}`,
-            );
-            return;
-        }
+            if (!steps || steps.length === 0) {
+                response.appendResponseLine(
+                    step_order !== undefined
+                        ? `No step found with order ${step_order} in workflow ${workflow_id}`
+                        : `No steps found for workflow ${workflow_id}`,
+                );
+                return;
+            }
 
-        const page = context.getSelectedPage();
-        const executionResults: Array<{ step: number; action: string; success: boolean; details: string }> = [];
+            const executionResults: Array<{ step: number; action: string; success: boolean; details: string }> = [];
 
         // Inject symbolic cursor for visual tracking
         await injectSymbolicCursor(page);
