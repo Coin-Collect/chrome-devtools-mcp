@@ -1349,6 +1349,43 @@ export const runWorkflow = defineTool({
                         // Wait for page to settle
                         await sleep(humanDelay(800, 0.3));
 
+                        // Re-inject symbolic cursor and pulse overlay (destroyed by navigation)
+                        await injectSymbolicCursor(page);
+                        try {
+                            await page.evaluate(() => {
+                                if (!document.getElementById('__wf_pulse_style')) {
+                                    const style = document.createElement('style');
+                                    style.id = '__wf_pulse_style';
+                                    style.textContent = `
+                                      @keyframes __wf_pulse {
+                                        0% { box-shadow: inset 0 0 0 0 rgba(239, 68, 68, 0.4); border-color: rgba(239, 68, 68, 0.4); }
+                                        50% { box-shadow: inset 0 0 20px 5px rgba(239, 68, 68, 0.8); border-color: rgba(239, 68, 68, 1); }
+                                        100% { box-shadow: inset 0 0 0 0 rgba(239, 68, 68, 0.4); border-color: rgba(239, 68, 68, 0.4); }
+                                      }
+                                    `;
+                                    document.head.appendChild(style);
+                                }
+                                let overlay = document.getElementById('__wf_pulse_overlay');
+                                if (!overlay) {
+                                    overlay = document.createElement('div');
+                                    overlay.id = '__wf_pulse_overlay';
+                                    overlay.style.position = 'fixed';
+                                    overlay.style.top = '0';
+                                    overlay.style.left = '0';
+                                    overlay.style.width = '100vw';
+                                    overlay.style.height = '100vh';
+                                    overlay.style.pointerEvents = 'none';
+                                    overlay.style.zIndex = '2147483646';
+                                    overlay.style.boxSizing = 'border-box';
+                                    overlay.style.border = '5px solid rgba(239, 68, 68, 0.8)';
+                                    overlay.style.animation = '__wf_pulse 1.5s infinite';
+                                    document.body.appendChild(overlay);
+                                }
+                            });
+                        } catch (e) {
+                            // Ignore re-injection failure
+                        }
+
                         executionResults.push({ step: step.step_order, action: 'nav', success: true, details: `Navigated to ${actionValue}` });
                         break;
                     }
@@ -1629,8 +1666,7 @@ export const simulateWorkflow = defineTool({
 
                     if (!result) {
                         response.appendResponseLine(`  ⚠ Element not found — skipping visual`);
-                        continue;
-                    }
+                    } else {
 
                     const elementHandle = result.element;
                     const clickPoint = await getElementClickPoint(elementHandle);
@@ -1698,15 +1734,22 @@ export const simulateWorkflow = defineTool({
                         const label = document.getElementById('__wf_sim_label');
                         if (label) label.remove();
                     });
+                    }
 
                 } else if (step.action === 'nav') {
-                    // Actually navigate to the URL
-                    response.appendResponseLine(`  🌐 Navigating to: ${actionValue}`);
-                    await page.goto(actionValue, { waitUntil: 'networkidle2' });
-                    await sleep(humanDelay(800, 0.3));
+                    // Navigation security check
+                    if (!actionValue) {
+                        response.appendResponseLine(`  ⚠ No URL provided for nav action`);
+                    } else {
+                        await checkNavigationSecurity(actionValue);
+                        // Actually navigate to the URL
+                        response.appendResponseLine(`  🌐 Navigating to: ${actionValue}`);
+                        await page.goto(actionValue, { waitUntil: 'networkidle2' });
+                        await sleep(humanDelay(800, 0.3));
 
-                    // Re-inject cursor and simulation styles on the new page
-                    await injectSymbolicCursor(page);
+                        // Re-inject cursor and simulation styles on the new page
+                        await injectSymbolicCursor(page);
+                    }
 
                 } else if (step.action === 'wait') {
                     const waitMs = actionValue ? parseInt(actionValue, 10) : 1000;
