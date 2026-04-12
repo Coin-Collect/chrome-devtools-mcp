@@ -48,6 +48,7 @@ import {
   type InstalledExtension,
 } from './utils/ExtensionRegistry.js';
 import {saveTemporaryFile} from './utils/files.js';
+import {checkNavigationSecurity} from './utils/security.js';
 import {getNetworkMultiplierFromString} from './WaitForHelper.js';
 
 interface McpContextOptions {
@@ -720,8 +721,9 @@ export class McpContext implements Context {
     verbose = false,
     devtoolsData: DevToolsData | undefined = undefined,
   ): Promise<void> {
+    await checkNavigationSecurity(page.pptrPage.url());
     const rootNode = await page.pptrPage.accessibility.snapshot({
-      includeIframes: true,
+      includeIframes: false,
       interestingOnly: !verbose,
     });
     if (!rootNode) {
