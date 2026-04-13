@@ -26,6 +26,7 @@ import {ToolCategory} from './tools/categories.js';
 import type {DefinedPageTool, ToolDefinition} from './tools/ToolDefinition.js';
 import {pageIdSchema} from './tools/ToolDefinition.js';
 import {createTools} from './tools/tools.js';
+import {getBrowserUseApiKey, connectBrowserUse} from './utils/browserUse.js';
 import {VERSION} from './version.js';
 
 export async function createMcpServer(
@@ -66,6 +67,22 @@ export async function createMcpServer(
 
   let context: McpContext;
   async function getContext(): Promise<McpContext> {
+    const devtools = serverArgs.experimentalDevtools ?? false;
+
+    // Browser-Use cloud browser: connect via WSS if API key is set
+    const browserUseApiKey = getBrowserUseApiKey();
+    if (browserUseApiKey) {
+      const browser = await connectBrowserUse(browserUseApiKey);
+      if (context?.browser !== browser) {
+        context = await McpContext.from(browser, logger, {
+          experimentalDevToolsDebugging: devtools,
+          experimentalIncludeAllPages: serverArgs.experimentalIncludeAllPages,
+          performanceCrux: serverArgs.performanceCrux,
+        });
+      }
+      return context;
+    }
+
     const chromeArgs: string[] = (serverArgs.chromeArg ?? []).map(String);
     const ignoreDefaultChromeArgs: string[] = (
       serverArgs.ignoreDefaultChromeArg ?? []
@@ -73,7 +90,6 @@ export async function createMcpServer(
     if (serverArgs.proxyServer) {
       chromeArgs.push(`--proxy-server=${serverArgs.proxyServer}`);
     }
-    const devtools = serverArgs.experimentalDevtools ?? false;
     const browser =
       serverArgs.browserUrl || serverArgs.wsEndpoint || serverArgs.autoConnect
         ? await ensureBrowserConnected({
