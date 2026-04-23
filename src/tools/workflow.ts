@@ -10,15 +10,12 @@ import path from 'node:path';
 
 import { supabase } from '../supabase.js';
 import { zod } from '../third_party/index.js';
-import type { KeyInput } from '../third_party/index.js';
+import type { ElementHandle, KeyInput, Page } from '../third_party/index.js';
 import { checkNavigationSecurity, validateWhitelistAddition } from '../utils/security.js';
 
 import { ToolCategory } from './categories.js';
-import { defineTool } from './ToolDefinition.js';
-import type { Context } from './ToolDefinition.js';
-
-type Page = ReturnType<Context['getSelectedPage']>;
-type ElementHandle = NonNullable<Awaited<ReturnType<Page['$']>>>;
+import { definePageTool, defineTool } from './ToolDefinition.js';
+import type { ContextPage } from './ToolDefinition.js';
 
 
 export const createWorkflow = defineTool({
@@ -133,7 +130,7 @@ interface SelectorsData {
     };
 }
 
-export const addWorkflowStep = defineTool({
+export const addWorkflowStep = definePageTool({
     name: 'add_workflow_step',
     description: 'Adds or updates a step in a workflow. If step_order exists, updates it. If not provided, appends as next step.',
     annotations: {
@@ -148,7 +145,7 @@ export const addWorkflowStep = defineTool({
         step_description: zod.string().optional().describe('A description of what this step does'),
         step_order: zod.number().optional().describe('The order of this step. If not provided, will be set to last + 1. If exists, will update.'),
     },
-    handler: async (request, response, context) => {
+    handler: async (request, response) => {
         const { workflow_id, action, uid, action_value, step_description, step_order } = request.params;
 
         // Actions that require an element
@@ -159,8 +156,8 @@ export const addWorkflowStep = defineTool({
 
         if (uid) {
             // Get element handle and AX node from snapshot
-            const handle = await context.getElementByUid(uid);
-            const node = context.getAXNodeByUid(uid);
+            const handle = await request.page.getElementByUid(uid);
+            const node = request.page.getAXNodeByUid(uid);
 
             if (!node) {
                 throw new Error(`No accessibility node found for uid ${uid}`);
@@ -351,7 +348,7 @@ export const addWorkflowStep = defineTool({
             strategies.sort((a, b) => a.priority - b.priority);
 
             // Filter out selectors that match more than one element
-            const page = context.getSelectedPage();
+            const page = request.page.pptrPage;
             const uniqueStrategies: SelectorStrategy[] = [];
             for (const strategy of strategies) {
                 const matchCount = await page.evaluate((selectorValue: string, selectorType: string) => {
@@ -786,7 +783,7 @@ let lastMouseX = 400;
 let lastMouseY = 300;
 
 // Inject a symbolic cursor overlay that tracks mouse movements on the page
-async function injectSymbolicCursor(page: ReturnType<Context['getSelectedPage']>): Promise<void> {
+async function injectSymbolicCursor(page: Page): Promise<void> {
     await page.evaluate(() => {
         const existing = document.getElementById('__wf_cursor');
         if (existing) existing.remove();
@@ -846,7 +843,7 @@ async function injectSymbolicCursor(page: ReturnType<Context['getSelectedPage']>
     });
 }
 
-async function removeSymbolicCursor(page: ReturnType<Context['getSelectedPage']>): Promise<void> {
+async function removeSymbolicCursor(page: Page): Promise<void> {
     await page.evaluate(() => {
         const cursor = document.getElementById('__wf_cursor');
         if (cursor) cursor.remove();
@@ -1053,7 +1050,7 @@ function resolveVariables(
     });
 }
 
-async function withPulseFrame<T>(page: ReturnType<Context['getSelectedPage']>, actionFn: () => Promise<T>): Promise<T> {
+async function withPulseFrame<T>(page: Page, actionFn: () => Promise<T>): Promise<T> {
     try {
         await page.evaluate(() => {
             if (!document.getElementById('__wf_pulse_style')) {
@@ -1106,7 +1103,7 @@ async function withPulseFrame<T>(page: ReturnType<Context['getSelectedPage']>, a
     }
 }
 
-export const runWorkflow = defineTool({
+export const runWorkflow = definePageTool({
     name: 'run_workflow',
     description: 'Runs a workflow or a specific step. Executes actions with human-like timing and robust selector fallbacks. Use {{variable_name}} in action_value and pass runtime values via the variables parameter.',
     annotations: {
@@ -1119,8 +1116,8 @@ export const runWorkflow = defineTool({
         variables: zod.record(zod.string(), zod.string()).optional().describe('Key-value pairs to resolve {{variable_name}} placeholders in action_value fields. Example: {"username": "john", "password": "secret"}'),
     },
     handler: async (request, response, context) => {
-        const page = context.getSelectedPage();
-        return withPulseFrame(page, async () => {
+        const page = request.page;
+        return withPulseFrame(page.pptrPage, async () => {
             const { workflow_id, step_order, variables } = request.params;
             const vars: Record<string, string> = variables || {};
 
@@ -1153,7 +1150,7 @@ export const runWorkflow = defineTool({
             const executionResults: Array<{ step: number; action: string; success: boolean; details: string }> = [];
 
         // Inject symbolic cursor for visual tracking
-        await injectSymbolicCursor(page);
+        await injectSymbolicCursor(page.pptrPage);
 
         // Pre-execution variable validation: scan all steps for required variables
         const missingVariables: Array<{ variable: string; stepOrder: number; description: string }> = [];
@@ -1209,7 +1206,7 @@ export const runWorkflow = defineTool({
                         }
 
                         const result = await findElementByStrategies(
-                            page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
                             step.selectors.strategies,
                         );
 
@@ -1222,7 +1219,7 @@ export const runWorkflow = defineTool({
                         const elementHandle = result.element;
 
                         // Scroll element into view naturally before interaction
-                        await scrollElementIntoView(page.mouse, page, elementHandle);
+                        await scrollElementIntoView(page.pptrPage.mouse, page.pptrPage, elementHandle);
 
                         // Natural mouse movement to element, then click
                         const center = await getElementClickPoint(elementHandle);
@@ -1230,10 +1227,10 @@ export const runWorkflow = defineTool({
                             throw new Error('Could not determine element position for click');
                         }
 
-                        await context.waitForEventsAfterAction(async () => {
+                        await page.waitForEventsAfterAction(async () => {
                             // Move mouse naturally along a Bezier curve
                             await moveMouseNaturally(
-                                page.mouse,
+                                page.pptrPage.mouse,
                                 lastMouseX, lastMouseY,
                                 center.x, center.y,
                             );
@@ -1244,9 +1241,9 @@ export const runWorkflow = defineTool({
                             await sleep(humanDelay(180, 0.4));
 
                             // Natural mousedown → hold → mouseup
-                            await page.mouse.down();
+                            await page.pptrPage.mouse.down();
                             await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25)))); // Hold 50-150ms
-                            await page.mouse.up();
+                            await page.pptrPage.mouse.up();
                         });
 
                         executionResults.push({ step: step.step_order, action: 'click', success: true, details: `Clicked using ${result.usedStrategy.type}` });
@@ -1260,31 +1257,31 @@ export const runWorkflow = defineTool({
 
                         if (step.selectors?.strategies) {
                             const result = await findElementByStrategies(
-                                page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                                page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
                                 step.selectors.strategies,
                             );
 
                             if (result) {
                                 const elementHandle = result.element;
                                 // Scroll element into view naturally before interaction
-                                await scrollElementIntoView(page.mouse, page, elementHandle);
+                                await scrollElementIntoView(page.pptrPage.mouse, page.pptrPage, elementHandle);
                                 const center = await getElementClickPoint(elementHandle);
                                 if (center) {
                                     // Move mouse naturally to element, then click to focus
                                     await moveMouseNaturally(
-                                        page.mouse,
+                                        page.pptrPage.mouse,
                                         lastMouseX, lastMouseY,
                                         center.x, center.y,
                                     );
                                     lastMouseX = center.x;
                                     lastMouseY = center.y;
 
-                                    await context.waitForEventsAfterAction(async () => {
+                                    await page.waitForEventsAfterAction(async () => {
                                         // Hover dwell before focus click
                                         await sleep(humanDelay(140, 0.4));
-                                        await page.mouse.down();
+                                        await page.pptrPage.mouse.down();
                                         await sleep(Math.max(50, Math.floor(gaussianRandom(95, 20))));
-                                        await page.mouse.up();
+                                        await page.pptrPage.mouse.up();
                                         await sleep(humanDelay(100, 0.3));
                                     });
                                 }
@@ -1296,7 +1293,7 @@ export const runWorkflow = defineTool({
 
                         // Type with realistic human-like rhythm using keyboard.down/up
                         await typeHumanLike(
-                            page.keyboard,
+                            page.pptrPage.keyboard,
                             actionValue,
                         );
 
@@ -1322,7 +1319,7 @@ export const runWorkflow = defineTool({
                         const scrollIncrement = scrollAmount / scrollSteps;
 
                         for (let i = 0; i < scrollSteps; i++) {
-                            await page.evaluate((amount: number) => {
+                            await page.pptrPage.evaluate((amount: number) => {
                                 window.scrollBy({ top: amount, behavior: 'smooth' });
                             }, scrollIncrement);
                             await sleep(humanDelay(80, 0.4));
@@ -1342,17 +1339,17 @@ export const runWorkflow = defineTool({
                         response.appendResponseLine(`  Navigating to: ${actionValue}`);
 
                         // Use waitForEventsAfterAction for navigation
-                        await context.waitForEventsAfterAction(async () => {
-                            await page.goto(actionValue, { waitUntil: 'networkidle2' });
+                        await page.waitForEventsAfterAction(async () => {
+                            await page.pptrPage.goto(actionValue, { waitUntil: 'networkidle2' });
                         });
 
                         // Wait for page to settle
                         await sleep(humanDelay(800, 0.3));
 
                         // Re-inject symbolic cursor and pulse overlay (destroyed by navigation)
-                        await injectSymbolicCursor(page);
+                        await injectSymbolicCursor(page.pptrPage);
                         try {
-                            await page.evaluate(() => {
+                            await page.pptrPage.evaluate(() => {
                                 if (!document.getElementById('__wf_pulse_style')) {
                                     const style = document.createElement('style');
                                     style.id = '__wf_pulse_style';
@@ -1396,7 +1393,7 @@ export const runWorkflow = defineTool({
                         }
 
                         const result = await findElementByStrategies(
-                            page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
                             step.selectors.strategies,
                         );
 
@@ -1407,7 +1404,7 @@ export const runWorkflow = defineTool({
                         const elementHandle = result.element;
 
                         // Scroll element into view naturally before interaction
-                        await scrollElementIntoView(page.mouse, page, elementHandle);
+                        await scrollElementIntoView(page.pptrPage.mouse, page.pptrPage, elementHandle);
 
                         // Natural mouse movement to element for hover
                         const center = await getElementClickPoint(elementHandle);
@@ -1415,9 +1412,9 @@ export const runWorkflow = defineTool({
                             throw new Error('Could not determine element position for hover');
                         }
 
-                        await context.waitForEventsAfterAction(async () => {
+                        await page.waitForEventsAfterAction(async () => {
                             await moveMouseNaturally(
-                                page.mouse,
+                                page.pptrPage.mouse,
                                 lastMouseX, lastMouseY,
                                 center.x, center.y,
                             );
@@ -1438,7 +1435,7 @@ export const runWorkflow = defineTool({
                         }
 
                         const result = await findElementByStrategies(
-                            page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
                             step.selectors.strategies,
                         );
 
@@ -1456,7 +1453,7 @@ export const runWorkflow = defineTool({
 
                     case 'screenshot': {
                         const filename = actionValue || `workflow_${workflow_id}_step_${step.step_order}.png`;
-                        const screenshot = await page.screenshot({ encoding: 'binary' });
+                        const screenshot = await page.pptrPage.screenshot({ encoding: 'binary' });
                         await context.saveFile(screenshot as Uint8Array, filename);
                         response.appendResponseLine(`  Screenshot saved: ${filename}`);
 
@@ -1473,7 +1470,7 @@ export const runWorkflow = defineTool({
                         }
 
                         const result = await findElementByStrategies(
-                            page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
                             step.selectors.strategies,
                         );
 
@@ -1492,7 +1489,7 @@ export const runWorkflow = defineTool({
                         const uint8Array = new Uint8Array(arrayBuffer);
 
                         // Save to temp file
-                        const { filename: filePath } = await context.saveTemporaryFile(uint8Array, 'image/png');
+                        const { filepath: filePath } = await context.saveTemporaryFile(uint8Array, 'image/png');
 
                         const uploadHandle = result.element;
                         try {
@@ -1500,7 +1497,7 @@ export const runWorkflow = defineTool({
                         } catch {
                             try {
                                 const [fileChooser] = await Promise.all([
-                                    page.waitForFileChooser({ timeout: 3000 }),
+                                    page.pptrPage.waitForFileChooser({ timeout: 3000 }),
                                     uploadHandle.asLocator().click(),
                                 ]);
                                 await fileChooser.accept([filePath]);
@@ -1535,7 +1532,7 @@ export const runWorkflow = defineTool({
         }
 
         // Remove symbolic cursor
-        await removeSymbolicCursor(page);
+        await removeSymbolicCursor(page.pptrPage);
 
         // Summary
         response.appendResponseLine('\n--- Execution Summary ---');
@@ -1547,7 +1544,7 @@ export const runWorkflow = defineTool({
     },
 });
 
-export const simulateWorkflow = defineTool({
+export const simulateWorkflow = definePageTool({
     name: 'simulate_workflow',
     description: 'Visually simulates a workflow without executing actions. Highlights target elements, moves the mouse naturally, and shows action labels so the user can preview workflow behavior.',
     annotations: {
@@ -1559,7 +1556,7 @@ export const simulateWorkflow = defineTool({
         step_order: zod.number().optional().describe('If provided, only this specific step will be simulated'),
         pause_ms: zod.number().optional().describe('Pause duration per step in milliseconds (default: 2000)'),
     },
-    handler: async (request, response, context) => {
+    handler: async (request, response) => {
         const { workflow_id, step_order, pause_ms } = request.params;
         const pauseDuration = pause_ms || 2000;
 
@@ -1585,7 +1582,7 @@ export const simulateWorkflow = defineTool({
             return;
         }
 
-        const page = context.getSelectedPage();
+        const page = request.page.pptrPage;
 
         // Inject symbolic cursor for visual tracking
         await injectSymbolicCursor(page);
@@ -1807,7 +1804,7 @@ export const simulateWorkflow = defineTool({
     },
 });
 
-export const clickLikeHuman = defineTool({
+export const clickLikeHuman = definePageTool({
     name: 'click_like_human',
     description: 'Clicks on an element with fully realistic human behavior: scrolls into view using mouse wheel with momentum, moves the cursor along a natural Bezier curve path, hovers briefly, then performs a mousedown/mouseup with natural hold timing. A symbolic cursor is displayed during the interaction. NOTE: Unless otherwise specified, prefer this tool over the standard click tool.',
     annotations: {
@@ -1817,16 +1814,16 @@ export const clickLikeHuman = defineTool({
     schema: {
         uid: zod.string().describe('The uid of an element on the page from the page content snapshot'),
     },
-    handler: async (request, response, context) => {
-        const page = context.getSelectedPage();
-        return withPulseFrame(page, async () => {
-            const handle = await context.getElementByUid(request.params.uid);
+    handler: async (request, response) => {
+        const page = request.page;
+        return withPulseFrame(page.pptrPage, async () => {
+            const handle = await page.getElementByUid(request.params.uid);
 
         try {
-            await injectSymbolicCursor(page);
+            await injectSymbolicCursor(page.pptrPage);
 
             // Scroll element into view naturally
-            await scrollElementIntoView(page.mouse, page, handle);
+            await scrollElementIntoView(page.pptrPage.mouse, page.pptrPage, handle);
 
             // Get a natural click point within the element
             const clickPoint = await getElementClickPoint(handle);
@@ -1836,7 +1833,7 @@ export const clickLikeHuman = defineTool({
 
             // Move mouse naturally along a Bezier curve
             await moveMouseNaturally(
-                page.mouse,
+                page.pptrPage.mouse,
                 lastMouseX, lastMouseY,
                 clickPoint.x, clickPoint.y,
             );
@@ -1847,17 +1844,17 @@ export const clickLikeHuman = defineTool({
             await sleep(humanDelay(180, 0.4));
 
             // Natural mousedown → hold → mouseup
-            await context.waitForEventsAfterAction(async () => {
-                await page.mouse.down();
+            await page.waitForEventsAfterAction(async () => {
+                await page.pptrPage.mouse.down();
                 await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
-                await page.mouse.up();
+                await page.pptrPage.mouse.up();
             });
 
-            await removeSymbolicCursor(page);
+            await removeSymbolicCursor(page.pptrPage);
 
             response.appendResponseLine('Successfully clicked on the element with human-like behavior.');
         } catch (error) {
-            await removeSymbolicCursor(page);
+            await removeSymbolicCursor(page.pptrPage);
             const message = error instanceof Error ? error.message : String(error);
             throw new Error(`Failed to click element: ${message}`);
         } finally {
@@ -1867,7 +1864,7 @@ export const clickLikeHuman = defineTool({
     },
 });
 
-export const typeLikeHuman = defineTool({
+export const typeLikeHuman = definePageTool({
     name: 'type_like_human',
     description: 'Types text into an element with fully realistic human behavior: scrolls into view, moves the cursor naturally to the element, clicks to focus with natural mousedown/mouseup, pauses briefly, then types each character using keyboard.down/up with natural hold durations, inter-key delays matching ~55 WPM, Shift key handling for uppercase, and occasional typos that are corrected with Backspace. NOTE: Unless otherwise specified, prefer this tool over the standard type tool.',
     annotations: {
@@ -1878,16 +1875,16 @@ export const typeLikeHuman = defineTool({
         uid: zod.string().describe('The uid of an element on the page from the page content snapshot'),
         text: zod.string().describe('The text to type into the element'),
     },
-    handler: async (request, response, context) => {
-        const page = context.getSelectedPage();
-        return withPulseFrame(page, async () => {
-            const handle = await context.getElementByUid(request.params.uid);
+    handler: async (request, response) => {
+        const page = request.page;
+        return withPulseFrame(page.pptrPage, async () => {
+            const handle = await page.getElementByUid(request.params.uid);
 
         try {
-            await injectSymbolicCursor(page);
+            await injectSymbolicCursor(page.pptrPage);
 
             // Scroll element into view naturally
-            await scrollElementIntoView(page.mouse, page, handle);
+            await scrollElementIntoView(page.pptrPage.mouse, page.pptrPage, handle);
 
             // Get a natural click point within the element
             const clickPoint = await getElementClickPoint(handle);
@@ -1897,7 +1894,7 @@ export const typeLikeHuman = defineTool({
 
             // Move mouse naturally along a Bezier curve
             await moveMouseNaturally(
-                page.mouse,
+                page.pptrPage.mouse,
                 lastMouseX, lastMouseY,
                 clickPoint.x, clickPoint.y,
             );
@@ -1908,26 +1905,26 @@ export const typeLikeHuman = defineTool({
             await sleep(humanDelay(140, 0.4));
 
             // Natural focus click: mousedown → hold → mouseup
-            await context.waitForEventsAfterAction(async () => {
-                await page.mouse.down();
+            await page.waitForEventsAfterAction(async () => {
+                await page.pptrPage.mouse.down();
                 await sleep(Math.max(50, Math.floor(gaussianRandom(95, 20))));
-                await page.mouse.up();
+                await page.pptrPage.mouse.up();
             });
 
             // Focus-to-first-keystroke delay
             await sleep(humanDelay(450, 0.4));
 
             // Type with realistic human-like rhythm
-            await typeHumanLike(page.keyboard, request.params.text);
+            await typeHumanLike(page.pptrPage.keyboard, request.params.text);
 
-            await removeSymbolicCursor(page);
+            await removeSymbolicCursor(page.pptrPage);
 
             const preview = request.params.text.length > 30
                 ? `${request.params.text.substring(0, 30)}...`
                 : request.params.text;
             response.appendResponseLine(`Successfully typed "${preview}" with human-like behavior.`);
         } catch (error) {
-            await removeSymbolicCursor(page);
+            await removeSymbolicCursor(page.pptrPage);
             const message = error instanceof Error ? error.message : String(error);
             throw new Error(`Failed to type into element: ${message}`);
         } finally {
@@ -1937,7 +1934,7 @@ export const typeLikeHuman = defineTool({
     },
 });
 
-export const clickAtLikeHuman = defineTool({
+export const clickAtLikeHuman = definePageTool({
     name: 'click_at_like_human',
     description: 'Clicks at the provided coordinates with fully realistic human behavior: moves the cursor along a natural Bezier curve path from its current position to the target coordinates, hovers briefly, then performs a mousedown/mouseup with natural hold timing. A symbolic cursor is displayed during the interaction. NOTE: Unless otherwise specified, prefer this tool over the standard click_at tool.',
     annotations: {
@@ -1948,12 +1945,12 @@ export const clickAtLikeHuman = defineTool({
         x: zod.number().describe('The x coordinate'),
         y: zod.number().describe('The y coordinate'),
     },
-    handler: async (request, response, context) => {
-        const page = context.getSelectedPage();
-        return withPulseFrame(page, async () => {
+    handler: async (request, response) => {
+        const page = request.page;
+        return withPulseFrame(page.pptrPage, async () => {
             const { x, y } = request.params;
 
-        await injectSymbolicCursor(page);
+        await injectSymbolicCursor(page.pptrPage);
 
         // Add slight human imprecision to coordinates
         const targetX = x + gaussianRandom(0, 1.5);
@@ -1961,7 +1958,7 @@ export const clickAtLikeHuman = defineTool({
 
         // Move mouse naturally along a Bezier curve
         await moveMouseNaturally(
-            page.mouse,
+            page.pptrPage.mouse,
             lastMouseX, lastMouseY,
             targetX, targetY,
         );
@@ -1972,20 +1969,20 @@ export const clickAtLikeHuman = defineTool({
         await sleep(humanDelay(180, 0.4));
 
         // Natural mousedown → hold → mouseup
-        await context.waitForEventsAfterAction(async () => {
-            await page.mouse.down();
+        await page.waitForEventsAfterAction(async () => {
+            await page.pptrPage.mouse.down();
             await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
-            await page.mouse.up();
+            await page.pptrPage.mouse.up();
         });
 
-        await removeSymbolicCursor(page);
+        await removeSymbolicCursor(page.pptrPage);
 
         response.appendResponseLine(`Successfully clicked at (${Math.round(targetX)}, ${Math.round(targetY)}) with human-like behavior.`);
         });
     },
 });
 
-export const dragLikeHuman = defineTool({
+export const dragLikeHuman = definePageTool({
     name: 'drag_like_human',
     description: 'Drags an element onto another element with fully realistic human behavior: scrolls the source element into view, moves the cursor naturally to it, picks it up with a natural mousedown hold, then moves the cursor along a Bezier curve to the drop target and releases with mouseup. Includes pickup pause, natural trajectory, and drop settling. NOTE: Unless otherwise specified, prefer this tool over the standard drag tool.',
     annotations: {
@@ -1996,16 +1993,16 @@ export const dragLikeHuman = defineTool({
         from_uid: zod.string().describe('The uid of the element to drag'),
         to_uid: zod.string().describe('The uid of the element to drop into'),
     },
-    handler: async (request, response, context) => {
-        const page = context.getSelectedPage();
-        const fromHandle = await context.getElementByUid(request.params.from_uid);
-        const toHandle = await context.getElementByUid(request.params.to_uid);
+    handler: async (request, response) => {
+        const page = request.page;
+        const fromHandle = await page.getElementByUid(request.params.from_uid);
+        const toHandle = await page.getElementByUid(request.params.to_uid);
 
         try {
-            await injectSymbolicCursor(page);
+            await injectSymbolicCursor(page.pptrPage);
 
             // Scroll source element into view
-            await scrollElementIntoView(page.mouse, page, fromHandle);
+            await scrollElementIntoView(page.pptrPage.mouse, page.pptrPage, fromHandle);
 
             // Get click point on source element
             const fromPoint = await getElementClickPoint(fromHandle);
@@ -2015,7 +2012,7 @@ export const dragLikeHuman = defineTool({
 
             // Move mouse naturally to source element
             await moveMouseNaturally(
-                page.mouse,
+                page.pptrPage.mouse,
                 lastMouseX, lastMouseY,
                 fromPoint.x, fromPoint.y,
             );
@@ -2026,22 +2023,22 @@ export const dragLikeHuman = defineTool({
             await sleep(humanDelay(200, 0.4));
 
             // Mousedown to pick up — slightly longer hold than a click
-            await page.mouse.down();
+            await page.pptrPage.mouse.down();
             await sleep(humanDelay(180, 0.3)); // Pickup pause: user grabs and holds
 
             // Scroll target into view if needed
-            await scrollElementIntoView(page.mouse, page, toHandle);
+            await scrollElementIntoView(page.pptrPage.mouse, page.pptrPage, toHandle);
 
             // Get drop point on target element
             const toPoint = await getElementClickPoint(toHandle);
             if (!toPoint) {
-                await page.mouse.up();
+                await page.pptrPage.mouse.up();
                 throw new Error('Could not determine target element position');
             }
 
             // Move mouse naturally to drop target while holding
             await moveMouseNaturally(
-                page.mouse,
+                page.pptrPage.mouse,
                 lastMouseX, lastMouseY,
                 toPoint.x, toPoint.y,
             );
@@ -2052,16 +2049,16 @@ export const dragLikeHuman = defineTool({
             await sleep(humanDelay(150, 0.3));
 
             // Release: mouseup to drop
-            await page.mouse.up();
+            await page.pptrPage.mouse.up();
 
             // Settling pause after drop
             await sleep(humanDelay(200, 0.3));
 
-            await removeSymbolicCursor(page);
+            await removeSymbolicCursor(page.pptrPage);
 
             response.appendResponseLine('Successfully dragged element with human-like behavior.');
         } catch (error) {
-            await removeSymbolicCursor(page);
+            await removeSymbolicCursor(page.pptrPage);
             const message = error instanceof Error ? error.message : String(error);
             throw new Error(`Failed to drag element: ${message}`);
         } finally {
