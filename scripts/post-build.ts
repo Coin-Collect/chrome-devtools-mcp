@@ -19,7 +19,7 @@ function writeFile(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content, 'utf-8');
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const devtoolsThirdPartyPath =
     'node_modules/chrome-devtools-frontend/front_end/third_party';
   const devtoolsFrontEndCorePath =
@@ -96,10 +96,10 @@ export const ExperimentName = {
   writeFile(runtimeFile, runtimeContent);
 
   copyDevToolsDescriptionFiles();
-  copyProjectToHomedir();
+  await copyProjectToHomedir();
 }
 
-function copyProjectToHomedir() {
+async function copyProjectToHomedir() {
   const homeDir = os.homedir();
   const destDir = path.join(homeDir, 'rockstarx');
   console.log(`Copying project to ${destDir}...`);
@@ -112,15 +112,35 @@ function copyProjectToHomedir() {
         const basename = path.basename(src);
         // Exclude .git to avoid copying version control history
         if (basename === '.git') return false;
-        // Optionally exclude node_modules if the copy is too slow, but keeping it ensures the copy is immediately runnable.
-        // We will exclude node_modules to make the build fast, user can run npm install in the new directory.
-        // Wait, if it's a global CLI, maybe it's better to copy node_modules too so it's ready to use. We'll copy it.
-        if (basename === 'node_modules') return false;
-        // Also exclude the destination if it's somehow nested, though homedir is usually outside
+        // Includes node_modules 
         return true;
       }
     });
     console.log(`Project copied to ${destDir} successfully.`);
+
+    const whitelistPath = path.join(destDir, 'whitelist.json');
+    fs.writeFileSync(whitelistPath, JSON.stringify(["sapienx.app"], null, 2), 'utf-8');
+    console.log('Created whitelist.json with sapienx.app');
+
+    const envPath = path.join(destDir, '.env');
+    if (!fs.existsSync(envPath)) {
+      const readline = await import('node:readline');
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+
+      const question = (query: string) => new Promise<string>((resolve) => rl.question(query, resolve));
+
+      console.log('\\n--- Rockstarx Setup ---');
+      const supabaseUrl = await question('Please enter your SUPABASE_URL: ');
+      const supabaseKey = await question('Please enter your SUPABASE_KEY: ');
+      
+      const envContent = \`SUPABASE_URL=\${supabaseUrl}\\nSUPABASE_KEY=\${supabaseKey}\\n\`;
+      fs.writeFileSync(envPath, envContent, 'utf-8');
+      rl.close();
+      console.log('.env file created successfully in rockstarx folder.\\n');
+    }
   } catch (error) {
     console.error(`Failed to copy project to homedir:`, error);
   }
@@ -139,4 +159,4 @@ function copyDevToolsDescriptionFiles() {
   fs.cpSync(sourceDir, destDir, {recursive: true});
 }
 
-main();
+main().catch(console.error);
