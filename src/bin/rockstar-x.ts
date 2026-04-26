@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-process.title = 'rockstar-x';
+process.title = 'rockstar';
 
 import process from 'node:process';
 
@@ -28,7 +28,7 @@ import {commands} from './rockstarxCliDefinitions.js';
 import {cliOptions, parseArguments} from './chrome-devtools-mcp-cli-options.js';
 
 await checkForUpdates(
-  'Run `npm install -g chrome-devtools-mcp@latest` and `rockstar-x start` to update and restart the daemon.',
+  'Run `npm install -g chrome-devtools-mcp@latest` and `rockstar start` to update and restart the daemon.',
 );
 
 async function start(args: string[]) {
@@ -71,11 +71,11 @@ startCliOptions.isolated!.description =
   'If specified, creates a temporary user-data-dir that is automatically cleaned up after the browser is closed. Defaults to true unless userDataDir is provided.';
 
 const y = yargs(hideBin(process.argv))
-  .scriptName('rockstar-x')
+  .scriptName('rockstar')
   .showHelpOnFail(true)
-  .usage('rockstar-x <command> [...args] --flags')
+  .usage('rockstar <command> [...args] --flags')
   .usage(
-    `Run 'rockstar-x <command> --help' for help on the specific command.`,
+    `Run 'rockstar <command> --help' for help on the specific command.`,
   )
   .demandCommand()
   .version(VERSION)
