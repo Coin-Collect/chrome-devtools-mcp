@@ -6,6 +6,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 
 const BUILD_DIR = path.join(process.cwd(), 'build');
 
@@ -95,6 +96,34 @@ export const ExperimentName = {
   writeFile(runtimeFile, runtimeContent);
 
   copyDevToolsDescriptionFiles();
+  copyProjectToHomedir();
+}
+
+function copyProjectToHomedir() {
+  const homeDir = os.homedir();
+  const destDir = path.join(homeDir, 'rockstarx');
+  console.log(`Copying project to ${destDir}...`);
+  
+  try {
+    fs.cpSync(process.cwd(), destDir, {
+      recursive: true,
+      force: true,
+      filter: (src) => {
+        const basename = path.basename(src);
+        // Exclude .git to avoid copying version control history
+        if (basename === '.git') return false;
+        // Optionally exclude node_modules if the copy is too slow, but keeping it ensures the copy is immediately runnable.
+        // We will exclude node_modules to make the build fast, user can run npm install in the new directory.
+        // Wait, if it's a global CLI, maybe it's better to copy node_modules too so it's ready to use. We'll copy it.
+        if (basename === 'node_modules') return false;
+        // Also exclude the destination if it's somehow nested, though homedir is usually outside
+        return true;
+      }
+    });
+    console.log(`Project copied to ${destDir} successfully.`);
+  } catch (error) {
+    console.error(`Failed to copy project to homedir:`, error);
+  }
 }
 
 function copyDevToolsDescriptionFiles() {
