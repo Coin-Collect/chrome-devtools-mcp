@@ -7,6 +7,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { execSync } from 'node:child_process';
 
 const BUILD_DIR = path.join(process.cwd(), 'build');
 
@@ -141,6 +142,10 @@ async function copyProjectToHomedir() {
       rl.close();
       console.log('.env file created successfully in rockstarx folder.\\n');
     }
+
+    console.log('Linking package globally...');
+    execSync('npm link', { cwd: destDir, stdio: 'inherit' });
+    console.log('Rockstar CLI is now available globally!');
   } catch (error) {
     console.error(`Failed to copy project to homedir:`, error);
   }
