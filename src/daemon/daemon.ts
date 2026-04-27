@@ -51,6 +51,20 @@ let mcpClient: Client | null = null;
 let mcpTransport: StdioClientTransport | null = null;
 let server: Server | null = null;
 
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+let idleTimeout: NodeJS.Timeout | null = null;
+
+function resetIdleTimeout() {
+  if (idleTimeout) {
+    clearTimeout(idleTimeout);
+  }
+  idleTimeout = setTimeout(() => {
+    logger('Idle timeout reached. Shutting down daemon.');
+    console.log('Daemon shutting down due to inactivity.');
+    void cleanup();
+  }, IDLE_TIMEOUT_MS);
+}
+
 async function setupMCPClient() {
   console.log('Setting up MCP client connection...');
 
@@ -84,6 +98,7 @@ interface McpResult {
   text?: string;
 }
 async function handleRequest(msg: DaemonMessage) {
+  resetIdleTimeout();
   try {
     if (msg.method === 'invoke_tool') {
       if (!mcpClient) {
@@ -174,6 +189,7 @@ async function startSocketServer() {
         try {
           // Setup MCP client
           await setupMCPClient();
+          resetIdleTimeout(); // Start the idle timer
           resolve();
         } catch (err) {
           reject(err);
@@ -190,6 +206,11 @@ async function startSocketServer() {
 
 async function cleanup() {
   console.log('Cleaning up daemon...');
+
+  if (idleTimeout) {
+    clearTimeout(idleTimeout);
+    idleTimeout = null;
+  }
 
   try {
     await mcpClient?.close();
