@@ -133,14 +133,14 @@ async function copyProjectToHomedir() {
 
       const question = (query: string) => new Promise<string>((resolve) => rl.question(query, resolve));
 
-      console.log('\\n--- Rockstarx Setup ---');
+      console.log('\n--- Rockstarx Setup ---');
       const supabaseUrl = await question('Please enter your SUPABASE_URL: ');
       const supabaseKey = await question('Please enter your SUPABASE_KEY: ');
       
-      const envContent = \`SUPABASE_URL=\${supabaseUrl}\\nSUPABASE_KEY=\${supabaseKey}\\n\`;
+      const envContent = `SUPABASE_URL=${supabaseUrl}\nSUPABASE_KEY=${supabaseKey}\n`;
       fs.writeFileSync(envPath, envContent, 'utf-8');
       rl.close();
-      console.log('.env file created successfully in rockstarx folder.\\n');
+      console.log('.env file created successfully in rockstarx folder.\n');
     }
 
     console.log('Linking package globally...');
