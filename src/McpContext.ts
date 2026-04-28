@@ -447,7 +447,7 @@ export class McpContext implements Context {
   selectPage(newPage: McpPage): void {
     this.#selectedPage = newPage;
     this.#updateSelectedPageTimeouts();
-    void applyStealthPatches(newPage).catch((error: unknown) => {
+    void applyStealthPatches(newPage.pptrPage).catch((error: unknown) => {
       this.logger('Error applying stealth patches', error);
     });
   }
