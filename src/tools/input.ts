@@ -488,7 +488,7 @@ export const uploadFileFromUrl = definePageTool({
     if (contentType.includes('webp')) mimeType = 'image/webp';
 
     const mcpContext = context as McpContext;
-    const {filename: filePath} = await mcpContext.saveTemporaryFile(uint8Array, mimeType);
+    const {filepath: filePath} = await mcpContext.saveTemporaryFile(uint8Array, mimeType);
 
     const handle = (await request.page.getElementByUid(
       uid,
