@@ -198,6 +198,80 @@ export const commands: Commands = {
       },
     },
   },
+  take_screenshot: {
+    description: 'Take a screenshot of the page or element.',
+    category: 'Debugging',
+    args: {
+      format: {
+        name: 'format',
+        type: 'string',
+        description: 'Type of format to save the screenshot as. Default is "png"',
+        required: false,
+        enum: ['png', 'jpeg', 'webp'],
+        default: 'png',
+      },
+      quality: {
+        name: 'quality',
+        type: 'number',
+        description: 'Compression quality for JPEG and WebP formats (0-100). Higher values mean better quality but larger file sizes. Ignored for PNG format.',
+        required: false,
+      },
+      uid: {
+        name: 'uid',
+        type: 'string',
+        description: 'The uid of an element on the page from the page content snapshot. If omitted, takes a page screenshot.',
+        required: false,
+      },
+      fullPage: {
+        name: 'fullPage',
+        type: 'boolean',
+        description: 'If set to true takes a screenshot of the full page instead of the currently visible viewport. Incompatible with uid.',
+        required: false,
+      },
+      filePath: {
+        name: 'filePath',
+        type: 'string',
+        description: 'The absolute path, or a path relative to the current working directory, to save the screenshot to instead of attaching it to the response.',
+        required: false,
+      },
+    },
+  },
+  click_at_like_human: {
+    description: 'Clicks at the provided coordinates with fully realistic human behavior: moves the cursor along a natural Bezier curve path from its current position to the target coordinates, hovers briefly, then performs a mousedown/mouseup with natural hold timing. A symbolic cursor is displayed during the interaction. NOTE: Unless otherwise specified, prefer this tool over the standard click_at tool.',
+    category: 'Input automation',
+    args: {
+      x: {
+        name: 'x',
+        type: 'number',
+        description: 'The x coordinate',
+        required: true,
+      },
+      y: {
+        name: 'y',
+        type: 'number',
+        description: 'The y coordinate',
+        required: true,
+      },
+    },
+  },
+  drag_like_human: {
+    description: 'Drags an element onto another element with fully realistic human behavior: scrolls the source element into view, moves the cursor naturally to it, picks it up with a natural mousedown hold, then moves the cursor along a Bezier curve to the drop target and releases with mouseup. Includes pickup pause, natural trajectory, and drop settling. NOTE: Unless otherwise specified, prefer this tool over the standard drag tool.',
+    category: 'Input automation',
+    args: {
+      from_uid: {
+        name: 'from_uid',
+        type: 'string',
+        description: 'The uid of the element to drag',
+        required: true,
+      },
+      to_uid: {
+        name: 'to_uid',
+        type: 'string',
+        description: 'The uid of the element to drop into',
+        required: true,
+      },
+    },
+  },
   list_pages: {
     description: 'Get a list of pages  open in the browser.',
     category: 'Navigation automation',
