@@ -98,6 +98,22 @@ export const ExperimentName = {
 
   copyDevToolsDescriptionFiles();
   await copyProjectToHomedir();
+  copySkillToCodex();
+}
+
+function copySkillToCodex() {
+  const codexDir = path.join(os.homedir(), '.codex');
+  if (!fs.existsSync(codexDir)) {
+    return;
+  }
+  const skillSrc = path.join(process.cwd(), 'skills', 'rockstar-cli');
+  const skillDest = path.join(codexDir, 'skills', 'rockstar-cli');
+  try {
+    fs.cpSync(skillSrc, skillDest, { recursive: true, force: true });
+    console.log(`Copied rockstar-cli skill to ${skillDest}`);
+  } catch (error) {
+    console.error('Failed to copy skill to .codex:', error);
+  }
 }
 
 async function copyProjectToHomedir() {
