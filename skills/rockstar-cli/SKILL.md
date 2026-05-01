@@ -40,6 +40,10 @@ Use `--help` on any command. Output defaults to Markdown, use `--output-format=j
 rockstar take_snapshot                              # Take a text snapshot of the page to get UIDs
 rockstar take_snapshot --verbose true                # Take a verbose snapshot with all a11y info
 rockstar take_snapshot --filePath "snapshot.txt"     # Save snapshot to a file
+rockstar take_screenshot                            # Take a screenshot of the page viewport
+rockstar take_screenshot --fullPage true             # Take a full page screenshot
+rockstar take_screenshot --uid "1_3" --filePath "el.png"  # Screenshot a specific element and save to file
+rockstar take_screenshot --format jpeg --quality 80  # Take a JPEG screenshot with custom quality
 ```
 
 ## Human-Like Input Automation (<uid> from snapshot)
@@ -47,6 +51,8 @@ rockstar take_snapshot --filePath "snapshot.txt"     # Save snapshot to a file
 ```bash
 rockstar click_like_human "uid"                     # Click an element with realistic human behavior
 rockstar type_like_human "uid" "Hello World"        # Type text into an element with realistic behavior
+rockstar click_at_like_human 350 200                # Click at coordinates with realistic human behavior
+rockstar drag_like_human "from_uid" "to_uid"        # Drag an element onto another with realistic behavior
 ```
 
 These tools simulate natural human behavior including:
@@ -55,6 +61,7 @@ These tools simulate natural human behavior including:
 - Hover dwell before clicking
 - Realistic mousedown/mouseup hold timing
 - Typing with ~55 WPM rhythm, shift handling, and occasional typo correction
+- Natural pickup pause and drop settling for drag operations
 
 ## Workflow Management
 
