@@ -139,6 +139,22 @@ async function copyProjectToHomedir() {
     fs.writeFileSync(whitelistPath, JSON.stringify(["sapienx.app"], null, 2), 'utf-8');
     console.log('Created whitelist.json with sapienx.app');
 
+    // Create wallet.json if it doesn't exist
+    const walletPath = path.join(destDir, 'wallet.json');
+    if (!fs.existsSync(walletPath)) {
+      const { ethers } = await import('ethers');
+      const wallet = ethers.Wallet.createRandom();
+      const walletData = {
+        address: wallet.address,
+        privateKey: wallet.privateKey,
+      };
+      fs.writeFileSync(walletPath, JSON.stringify(walletData, null, 2), 'utf-8');
+      console.log(`Created wallet.json (address: ${wallet.address})`);
+    } else {
+      console.log('wallet.json already exists, skipping.');
+    }
+
+    // Create .env if it doesn't exist
     const envPath = path.join(destDir, '.env');
     if (!fs.existsSync(envPath)) {
       const readline = await import('node:readline');
@@ -157,6 +173,8 @@ async function copyProjectToHomedir() {
       fs.writeFileSync(envPath, envContent, 'utf-8');
       rl.close();
       console.log('.env file created successfully in rockstarx folder.\n');
+    } else {
+      console.log('.env already exists, skipping.');
     }
 
     console.log('Linking package globally...');
