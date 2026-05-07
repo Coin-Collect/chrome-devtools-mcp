@@ -50,7 +50,8 @@ rockstar take_screenshot --format jpeg --quality 80  # Take a JPEG screenshot wi
 
 ```bash
 rockstar click_like_human "uid"                     # Click an element with realistic human behavior
-rockstar type_like_human "uid" "Hello World"        # Type text into an element with realistic behavior
+rockstar type_like_human --uid "uid" --text "Hello"  # Type into a specific element
+rockstar type_like_human --text "Hello World"        # Type into the currently focused element
 rockstar click_at_like_human 350 200                # Click at coordinates with realistic human behavior
 rockstar drag_like_human "from_uid" "to_uid"        # Drag an element onto another with realistic behavior
 ```
