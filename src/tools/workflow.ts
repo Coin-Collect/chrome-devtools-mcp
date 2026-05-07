@@ -1866,19 +1866,35 @@ export const clickLikeHuman = definePageTool({
 
 export const typeLikeHuman = definePageTool({
     name: 'type_like_human',
-    description: 'Types text into an element with fully realistic human behavior: scrolls into view, moves the cursor naturally to the element, clicks to focus with natural mousedown/mouseup, pauses briefly, then types each character using keyboard.down/up with natural hold durations, inter-key delays matching ~55 WPM, Shift key handling for uppercase, and occasional typos that are corrected with Backspace. NOTE: Unless otherwise specified, prefer this tool over the standard type tool.',
+    description: 'Types text into an element with fully realistic human behavior: scrolls into view, moves the cursor naturally to the element, clicks to focus with natural mousedown/mouseup, pauses briefly, then types each character using keyboard.down/up with natural hold durations, inter-key delays matching ~55 WPM, Shift key handling for uppercase, and occasional typos that are corrected with Backspace. If uid is not provided, types into the currently focused element. NOTE: Unless otherwise specified, prefer this tool over the standard type tool.',
     annotations: {
         category: ToolCategory.INPUT,
         readOnlyHint: false,
     },
     schema: {
-        uid: zod.string().describe('The uid of an element on the page from the page content snapshot'),
+        uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. If not provided, types into the currently focused element.'),
         text: zod.string().describe('The text to type into the element'),
     },
     handler: async (request, response) => {
         const page = request.page;
         return withPulseFrame(page.pptrPage, async () => {
-            const handle = await page.getElementByUid(request.params.uid);
+            const uid = request.params.uid;
+
+            // If no uid, type directly into the focused element
+            if (!uid) {
+                await injectSymbolicCursor(page.pptrPage);
+                await sleep(humanDelay(200, 0.4));
+                await typeHumanLike(page.pptrPage.keyboard, request.params.text);
+                await removeSymbolicCursor(page.pptrPage);
+
+                const preview = request.params.text.length > 30
+                    ? `${request.params.text.substring(0, 30)}...`
+                    : request.params.text;
+                response.appendResponseLine(`Successfully typed "${preview}" into the focused element with human-like behavior.`);
+                return;
+            }
+
+            const handle = await page.getElementByUid(uid);
 
         try {
             await injectSymbolicCursor(page.pptrPage);
