@@ -17,6 +17,7 @@ import {
   type UncaughtError,
 } from './PageCollector.js';
 import {applyStealthPatches} from './stealth.js';
+import {injectEthereumProvider} from './wallet.js';
 import type {DevTools} from './third_party/index.js';
 import type {
   Browser,
@@ -449,6 +450,9 @@ export class McpContext implements Context {
     this.#updateSelectedPageTimeouts();
     void applyStealthPatches(newPage.pptrPage).catch((error: unknown) => {
       this.logger('Error applying stealth patches', error);
+    });
+    void injectEthereumProvider(newPage.pptrPage).catch((error: unknown) => {
+      this.logger('Error injecting Ethereum provider', error);
     });
   }
 
