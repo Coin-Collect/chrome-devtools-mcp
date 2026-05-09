@@ -40,6 +40,17 @@ interface WalletPage {
 }
 
 // ---------------------------------------------------------------------------
+// Window augmentation for exposed signing bridges
+// ---------------------------------------------------------------------------
+
+declare global {
+    interface Window {
+        __rockstar_personal_sign?: (msg: string) => Promise<string>;
+        __rockstar_sign_typed_data?: (msg: string) => Promise<string>;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -105,12 +116,32 @@ function createTypedDataSigner(privateKey: string) {
         }
 
         // Extract fields safely after narrowing via 'in'
-        const domain = parsed.domain;
+        const rawDomain = parsed.domain;
         const rawTypes = parsed.types;
-        const msg = parsed.message;
+        const rawMsg = parsed.message;
 
         if (typeof rawTypes !== 'object' || rawTypes === null) {
             throw new Error('Invalid typed data: types must be an object');
+        }
+
+        if (typeof rawMsg !== 'object' || rawMsg === null) {
+            throw new Error('Invalid typed data: message must be an object');
+        }
+
+        // Build a type-safe domain object
+        const domain: ethers.TypedDataDomain = {};
+        if (typeof rawDomain === 'object' && rawDomain !== null) {
+            if ('name' in rawDomain && typeof rawDomain.name === 'string') domain.name = rawDomain.name;
+            if ('version' in rawDomain && typeof rawDomain.version === 'string') domain.version = rawDomain.version;
+            if ('chainId' in rawDomain) domain.chainId = rawDomain.chainId;
+            if ('verifyingContract' in rawDomain && typeof rawDomain.verifyingContract === 'string') domain.verifyingContract = rawDomain.verifyingContract;
+            if ('salt' in rawDomain) domain.salt = rawDomain.salt;
+        }
+
+        // Build a type-safe message record
+        const message: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(rawMsg)) {
+            message[k] = v;
         }
 
         // Build a clean types map without EIP712Domain (ethers handles it)
@@ -135,7 +166,7 @@ function createTypedDataSigner(privateKey: string) {
         return wallet.signTypedData(
             domain,
             signingTypes,
-            msg,
+            message,
         );
     };
 }
@@ -274,15 +305,15 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                 case 'personal_sign': {
                     const message = String(p[0]);
                     // __rockstar_personal_sign is exposed via Puppeteer exposeFunction
-                    if (!('__rockstar_personal_sign' in window)) throw new Error('Signing bridge not available');
                     const sign = window.__rockstar_personal_sign;
+                    if (!sign) throw new Error('Signing bridge not available');
                     return sign(message);
                 }
 
                 case 'eth_sign': {
                     const message = String(p[1]);
-                    if (!('__rockstar_personal_sign' in window)) throw new Error('Signing bridge not available');
                     const sign = window.__rockstar_personal_sign;
+                    if (!sign) throw new Error('Signing bridge not available');
                     return sign(message);
                 }
 
@@ -291,8 +322,8 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                 case 'eth_signTypedData_v4': {
                     const raw = p[1];
                     const payload = typeof raw === 'string' ? raw : JSON.stringify(raw);
-                    if (!('__rockstar_sign_typed_data' in window)) throw new Error('Signing bridge not available');
                     const signTyped = window.__rockstar_sign_typed_data;
+                    if (!signTyped) throw new Error('Signing bridge not available');
                     return signTyped(payload);
                 }
 
