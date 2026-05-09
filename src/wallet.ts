@@ -133,9 +133,9 @@ function createTypedDataSigner(privateKey: string) {
         if (typeof rawDomain === 'object' && rawDomain !== null) {
             if ('name' in rawDomain && typeof rawDomain.name === 'string') domain.name = rawDomain.name;
             if ('version' in rawDomain && typeof rawDomain.version === 'string') domain.version = rawDomain.version;
-            if ('chainId' in rawDomain) domain.chainId = rawDomain.chainId;
+            if ('chainId' in rawDomain && (typeof rawDomain.chainId === 'string' || typeof rawDomain.chainId === 'number' || typeof rawDomain.chainId === 'bigint')) domain.chainId = rawDomain.chainId;
             if ('verifyingContract' in rawDomain && typeof rawDomain.verifyingContract === 'string') domain.verifyingContract = rawDomain.verifyingContract;
-            if ('salt' in rawDomain) domain.salt = rawDomain.salt;
+            if ('salt' in rawDomain && typeof rawDomain.salt === 'string') domain.salt = rawDomain.salt;
         }
 
         // Build a type-safe message record
