@@ -133,9 +133,9 @@ function createTypedDataSigner(privateKey: string) {
         }
 
         return wallet.signTypedData(
-            domain as ethers.TypedDataDomain,
+            domain,
             signingTypes,
-            msg as Record<string, unknown>,
+            msg,
         );
     };
 }
@@ -147,7 +147,7 @@ function createTypedDataSigner(privateKey: string) {
 /* eslint-disable @typescript-eslint/no-unused-vars */
 function ethereumProviderScript(walletAddress: string, chainId: string): void {
     // Guard: don't override an existing provider
-    if ((window as Record<string, unknown>).ethereum) return;
+    if ('ethereum' in window) return;
 
     type Listener = (...args: unknown[]) => void;
     const listeners: Record<string, Listener[]> = {};
@@ -221,7 +221,7 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
         // ---------- EIP-1193 request ----------
         async request(args: { method: string; params?: unknown[] | Record<string, unknown> }): Promise<unknown> {
             const { method, params } = args;
-            const p = (Array.isArray(params) ? params : []) as unknown[];
+            const p: unknown[] = Array.isArray(params) ? params : [];
 
             switch (method) {
                 // ---- Account access ----
@@ -252,9 +252,10 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                         'chainId' in req &&
                         req.chainId !== chainId
                     ) {
-                        const err = new Error('Only Polygon network is supported');
-                        (err as Record<string, unknown>).code = 4902;
-                        throw err;
+                        throw Object.assign(
+                            new Error('Only Polygon network is supported'),
+                            { code: 4902 },
+                        );
                     }
                     return null;
                 }
@@ -273,17 +274,15 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                 case 'personal_sign': {
                     const message = String(p[0]);
                     // __rockstar_personal_sign is exposed via Puppeteer exposeFunction
-                    const sign = (window as Record<string, unknown>).__rockstar_personal_sign as
-                        ((msg: string) => Promise<string>) | undefined;
-                    if (!sign) throw new Error('Signing bridge not available');
+                    if (!('__rockstar_personal_sign' in window)) throw new Error('Signing bridge not available');
+                    const sign = window.__rockstar_personal_sign;
                     return sign(message);
                 }
 
                 case 'eth_sign': {
                     const message = String(p[1]);
-                    const sign = (window as Record<string, unknown>).__rockstar_personal_sign as
-                        ((msg: string) => Promise<string>) | undefined;
-                    if (!sign) throw new Error('Signing bridge not available');
+                    if (!('__rockstar_personal_sign' in window)) throw new Error('Signing bridge not available');
+                    const sign = window.__rockstar_personal_sign;
                     return sign(message);
                 }
 
@@ -292,9 +291,8 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                 case 'eth_signTypedData_v4': {
                     const raw = p[1];
                     const payload = typeof raw === 'string' ? raw : JSON.stringify(raw);
-                    const signTyped = (window as Record<string, unknown>).__rockstar_sign_typed_data as
-                        ((msg: string) => Promise<string>) | undefined;
-                    if (!signTyped) throw new Error('Signing bridge not available');
+                    if (!('__rockstar_sign_typed_data' in window)) throw new Error('Signing bridge not available');
+                    const signTyped = window.__rockstar_sign_typed_data;
                     return signTyped(payload);
                 }
 
@@ -305,9 +303,10 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                 // ---- Unimplemented methods ----
                 default: {
                     alert(`Rockstar Wallet: Method "${method}" is not yet implemented.`);
-                    const err = new Error(`Method "${method}" is not supported`);
-                    (err as Record<string, unknown>).code = 4200;
-                    throw err;
+                    throw Object.assign(
+                        new Error(`Method "${method}" is not supported`),
+                        { code: 4200 },
+                    );
                 }
             }
         },
@@ -321,7 +320,7 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
             if (typeof methodOrPayload === 'string') {
                 return provider.request({
                     method: methodOrPayload,
-                    params: callbackOrParams as unknown[],
+                    params: Array.isArray(callbackOrParams) ? callbackOrParams : [],
                 });
             }
             return provider.request({
