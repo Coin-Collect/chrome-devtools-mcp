@@ -727,7 +727,7 @@ export class McpContext implements Context {
   ): Promise<void> {
     await checkNavigationSecurity(page.pptrPage.url());
     const rootNode = await page.pptrPage.accessibility.snapshot({
-      includeIframes: false,
+      includeIframes: true,
       interestingOnly: !verbose,
     });
     if (!rootNode) {
