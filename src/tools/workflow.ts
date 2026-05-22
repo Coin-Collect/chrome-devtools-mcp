@@ -10,7 +10,7 @@ import path from 'node:path';
 
 import { supabase } from '../supabase.js';
 import { zod } from '../third_party/index.js';
-import type { ElementHandle, KeyInput, Page } from '../third_party/index.js';
+import type { ElementHandle, KeyInput, Page, Frame } from '../third_party/index.js';
 import { checkNavigationSecurity, validateWhitelistAddition } from '../utils/security.js';
 
 import { ToolCategory } from './categories.js';
@@ -128,6 +128,236 @@ interface SelectorsData {
         name: string;
         description: string;
     };
+    frame_selectors?: string[];
+}
+
+async function generateSelectorsForElement(
+    handle: ElementHandle<Element>,
+    frame: Frame,
+): Promise<SelectorStrategy[]> {
+    const strategies: SelectorStrategy[] = await handle.evaluate((el: Element) => {
+        const results: SelectorStrategy[] = [];
+
+        // 1. ID selector (highest priority)
+        if (el.id) {
+            results.push({
+                type: 'id',
+                value: `#${el.id}`,
+                priority: 1,
+            });
+        }
+
+        // 2. data-testid / data-test / data-cy attributes
+        const testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-cy');
+        if (testId) {
+            const attrName = el.hasAttribute('data-testid') ? 'data-testid' : el.hasAttribute('data-test') ? 'data-test' : 'data-cy';
+            results.push({
+                type: 'testid',
+                value: `[${attrName}="${testId}"]`,
+                priority: 2,
+            });
+        }
+
+        // 3. ARIA label selector
+        const ariaLabel = el.getAttribute('aria-label');
+        if (ariaLabel) {
+            results.push({
+                type: 'aria-label',
+                value: `[aria-label="${ariaLabel}"]`,
+                priority: 3,
+            });
+        }
+
+        // 4. Name attribute (for form elements)
+        const name = el.getAttribute('name');
+        if (name) {
+            results.push({
+                type: 'name',
+                value: `[name="${name}"]`,
+                priority: 4,
+            });
+        }
+
+        // 5. Role + accessible name combination
+        const role = el.getAttribute('role');
+        if (role && ariaLabel) {
+            results.push({
+                type: 'role-name',
+                value: `[role="${role}"][aria-label="${ariaLabel}"]`,
+                priority: 5,
+            });
+        }
+
+        // 6. Class-based selector (with tag)
+        if (el.className && typeof el.className === 'string' && el.className.trim()) {
+            const classes = el.className.trim().split(/\s+/).slice(0, 3).join('.');
+            results.push({
+                type: 'class',
+                value: `${el.tagName.toLowerCase()}.${classes}`,
+                priority: 6,
+            });
+        }
+
+        // 7. Tag + type combination (for inputs)
+        const inputType = el.getAttribute('type');
+        if (el.tagName === 'INPUT' && inputType) {
+            results.push({
+                type: 'input-type',
+                value: `input[type="${inputType}"]`,
+                priority: 7,
+            });
+        }
+
+        // 8. Placeholder selector (for inputs/textareas)
+        const placeholder = el.getAttribute('placeholder');
+        if (placeholder) {
+            results.push({
+                type: 'placeholder',
+                value: `[placeholder="${placeholder}"]`,
+                priority: 8,
+            });
+        }
+
+        // 9. Text content selector (for buttons/links)
+        const textContent = el.textContent?.trim();
+        if (textContent && textContent.length < 50 && (el.tagName === 'BUTTON' || el.tagName === 'A')) {
+            results.push({
+                type: 'text',
+                value: `//${el.tagName.toLowerCase()}[normalize-space()="${textContent}"]`,
+                priority: 9,
+            });
+        }
+
+        // 10. XPath with index (fallback)
+        const getXPath = (element: Element): string => {
+            if (element.id) return `//*[@id="${element.id}"]`;
+            const parts: string[] = [];
+            let current: Element | null = element;
+            while (current && current.nodeType === Node.ELEMENT_NODE) {
+                let index = 1;
+                let sibling = current.previousElementSibling;
+                while (sibling) {
+                    if (sibling.tagName === current.tagName) index++;
+                    sibling = sibling.previousElementSibling;
+                }
+                parts.unshift(`${current.tagName.toLowerCase()}[${index}]`);
+                current = current.parentElement;
+            }
+            return '/' + parts.join('/');
+        };
+        results.push({
+            type: 'xpath',
+            value: getXPath(el),
+            priority: 10,
+        });
+
+        // 11. CSS path (unique path from root)
+        const getCssPath = (element: Element): string => {
+            const path: string[] = [];
+            let current: Element | null = element;
+            while (current && current.nodeType === Node.ELEMENT_NODE) {
+                let selector = current.tagName.toLowerCase();
+                if (current.id) {
+                    selector = `#${current.id}`;
+                    path.unshift(selector);
+                    break;
+                }
+                let nth = 1;
+                let sibling = current.previousElementSibling;
+                while (sibling) {
+                    if (sibling.tagName === current.tagName) nth++;
+                    sibling = sibling.previousElementSibling;
+                }
+                if (nth > 1) selector += `:nth-of-type(${nth})`;
+                path.unshift(selector);
+                current = current.parentElement;
+            }
+            return path.join(' > ');
+        };
+        results.push({
+            type: 'css-path',
+            value: getCssPath(el),
+            priority: 11,
+        });
+
+        return results;
+    });
+
+    // Sort by priority
+    strategies.sort((a, b) => a.priority - b.priority);
+
+    // Filter out selectors that match more than one element in this frame
+    const uniqueStrategies: SelectorStrategy[] = [];
+    for (const strategy of strategies) {
+        const matchCount = await frame.evaluate((selectorValue: string, selectorType: string) => {
+            if (selectorType === 'xpath' || selectorType === 'text') {
+                const result = document.evaluate(
+                    selectorValue,
+                    document,
+                    null,
+                    XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+                    null,
+                );
+                return result.snapshotLength;
+            }
+            return document.querySelectorAll(selectorValue).length;
+        }, strategy.value, strategy.type);
+
+        if (matchCount === 1) {
+            uniqueStrategies.push(strategy);
+        }
+    }
+
+    return uniqueStrategies;
+}
+
+async function resolveFrame(
+    page: Page,
+    frameSelectors: string[] | undefined,
+): Promise<Frame> {
+    let currentFrame = page.mainFrame();
+    if (!frameSelectors || frameSelectors.length === 0) {
+        return currentFrame;
+    }
+
+    for (const selector of frameSelectors) {
+        const iframeHandle = await currentFrame.$(selector);
+        if (!iframeHandle) {
+            throw new Error(`Iframe element not found using selector: ${selector}`);
+        }
+        const contentFrame = await iframeHandle.contentFrame();
+        if (!contentFrame) {
+            throw new Error(`Could not access contentFrame of iframe: ${selector}`);
+        }
+        currentFrame = contentFrame;
+    }
+
+    return currentFrame;
+}
+
+async function injectSimulationStyles(frame: Page | Frame): Promise<void> {
+    await frame.evaluate(() => {
+        const existingStyle = document.getElementById('__wf_sim_style');
+        if (existingStyle) return;
+
+        const style = document.createElement('style');
+        style.id = '__wf_sim_style';
+        style.textContent = `
+            @keyframes __wf_sim_pulse {
+                0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.6); }
+                50% { box-shadow: 0 0 0 8px rgba(99, 102, 241, 0); }
+                100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+            }
+            .__wf_sim_highlight {
+                outline: 3px solid #6366f1 !important;
+                outline-offset: 2px !important;
+                animation: __wf_sim_pulse 1s ease-in-out infinite !important;
+                position: relative !important;
+                z-index: 999998 !important;
+            }
+        `;
+        document.head.appendChild(style);
+    });
 }
 
 export const addWorkflowStep = definePageTool({
@@ -195,181 +425,35 @@ export const addWorkflowStep = definePageTool({
                 }
             }
 
-            // Generate selector strategies using selectorHandle.evaluate
-            const strategies: SelectorStrategy[] = await selectorHandle.evaluate((el: Element) => {
-                const results: SelectorStrategy[] = [];
+            const elementFrame = selectorHandle.frame;
+            const uniqueStrategies = await generateSelectorsForElement(selectorHandle, elementFrame);
 
-                // 1. ID selector (highest priority)
-                if (el.id) {
-                    results.push({
-                        type: 'id',
-                        value: `#${el.id}`,
-                        priority: 1,
-                    });
+            // Generate frame selectors pathway if element is inside an iframe
+            const frameSelectors: string[] = [];
+            const mainFrame = request.page.pptrPage.mainFrame();
+            let currentFrame = elementFrame;
+            const framePath: Frame[] = [];
+
+            while (currentFrame && currentFrame !== mainFrame) {
+                framePath.unshift(currentFrame);
+                const parent = currentFrame.parentFrame();
+                if (!parent) {
+                    break;
                 }
+                currentFrame = parent;
+            }
 
-                // 2. data-testid / data-test / data-cy attributes
-                const testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-cy');
-                if (testId) {
-                    const attrName = el.hasAttribute('data-testid') ? 'data-testid' : el.hasAttribute('data-test') ? 'data-test' : 'data-cy';
-                    results.push({
-                        type: 'testid',
-                        value: `[${attrName}="${testId}"]`,
-                        priority: 2,
-                    });
-                }
-
-                // 3. ARIA label selector
-                const ariaLabel = el.getAttribute('aria-label');
-                if (ariaLabel) {
-                    results.push({
-                        type: 'aria-label',
-                        value: `[aria-label="${ariaLabel}"]`,
-                        priority: 3,
-                    });
-                }
-
-                // 4. Name attribute (for form elements)
-                const name = el.getAttribute('name');
-                if (name) {
-                    results.push({
-                        type: 'name',
-                        value: `[name="${name}"]`,
-                        priority: 4,
-                    });
-                }
-
-                // 5. Role + accessible name combination
-                const role = el.getAttribute('role');
-                if (role && ariaLabel) {
-                    results.push({
-                        type: 'role-name',
-                        value: `[role="${role}"][aria-label="${ariaLabel}"]`,
-                        priority: 5,
-                    });
-                }
-
-                // 6. Class-based selector (with tag)
-                if (el.className && typeof el.className === 'string' && el.className.trim()) {
-                    const classes = el.className.trim().split(/\s+/).slice(0, 3).join('.');
-                    results.push({
-                        type: 'class',
-                        value: `${el.tagName.toLowerCase()}.${classes}`,
-                        priority: 6,
-                    });
-                }
-
-                // 7. Tag + type combination (for inputs)
-                const inputType = el.getAttribute('type');
-                if (el.tagName === 'INPUT' && inputType) {
-                    results.push({
-                        type: 'input-type',
-                        value: `input[type="${inputType}"]`,
-                        priority: 7,
-                    });
-                }
-
-                // 8. Placeholder selector (for inputs/textareas)
-                const placeholder = el.getAttribute('placeholder');
-                if (placeholder) {
-                    results.push({
-                        type: 'placeholder',
-                        value: `[placeholder="${placeholder}"]`,
-                        priority: 8,
-                    });
-                }
-
-                // 9. Text content selector (for buttons/links)
-                const textContent = el.textContent?.trim();
-                if (textContent && textContent.length < 50 && (el.tagName === 'BUTTON' || el.tagName === 'A')) {
-                    results.push({
-                        type: 'text',
-                        value: `//${el.tagName.toLowerCase()}[normalize-space()="${textContent}"]`,
-                        priority: 9,
-                    });
-                }
-
-                // 10. XPath with index (fallback)
-                const getXPath = (element: Element): string => {
-                    if (element.id) return `//*[@id="${element.id}"]`;
-                    const parts: string[] = [];
-                    let current: Element | null = element;
-                    while (current && current.nodeType === Node.ELEMENT_NODE) {
-                        let index = 1;
-                        let sibling = current.previousElementSibling;
-                        while (sibling) {
-                            if (sibling.tagName === current.tagName) index++;
-                            sibling = sibling.previousElementSibling;
-                        }
-                        parts.unshift(`${current.tagName.toLowerCase()}[${index}]`);
-                        current = current.parentElement;
+            let parentFrame = mainFrame;
+            for (const frame of framePath) {
+                const frameElementHandle = await frame.frameElement();
+                if (frameElementHandle) {
+                    const iframeStrategies = await generateSelectorsForElement(frameElementHandle, parentFrame);
+                    const bestIframeSelector = iframeStrategies.length > 0 ? iframeStrategies[0].value : '';
+                    if (bestIframeSelector) {
+                        frameSelectors.push(bestIframeSelector);
                     }
-                    return '/' + parts.join('/');
-                };
-                results.push({
-                    type: 'xpath',
-                    value: getXPath(el),
-                    priority: 10,
-                });
-
-                // 11. CSS path (unique path from root)
-                const getCssPath = (element: Element): string => {
-                    const path: string[] = [];
-                    let current: Element | null = element;
-                    while (current && current.nodeType === Node.ELEMENT_NODE) {
-                        let selector = current.tagName.toLowerCase();
-                        if (current.id) {
-                            selector = `#${current.id}`;
-                            path.unshift(selector);
-                            break;
-                        }
-                        let nth = 1;
-                        let sibling = current.previousElementSibling;
-                        while (sibling) {
-                            if (sibling.tagName === current.tagName) nth++;
-                            sibling = sibling.previousElementSibling;
-                        }
-                        if (nth > 1) selector += `:nth-of-type(${nth})`;
-                        path.unshift(selector);
-                        current = current.parentElement;
-                    }
-                    return path.join(' > ');
-                };
-                results.push({
-                    type: 'css-path',
-                    value: getCssPath(el),
-                    priority: 11,
-                });
-
-                return results;
-            });
-
-            // Sort by priority and pick best selector
-            strategies.sort((a, b) => a.priority - b.priority);
-
-            // Filter out selectors that match more than one element
-            const page = request.page.pptrPage;
-            const uniqueStrategies: SelectorStrategy[] = [];
-            for (const strategy of strategies) {
-                const matchCount = await page.evaluate((selectorValue: string, selectorType: string) => {
-                    if (selectorType === 'xpath' || selectorType === 'text') {
-                        // XPath-based selectors
-                        const result = document.evaluate(
-                            selectorValue,
-                            document,
-                            null,
-                            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-                            null,
-                        );
-                        return result.snapshotLength;
-                    }
-                    // CSS-based selectors
-                    return document.querySelectorAll(selectorValue).length;
-                }, strategy.value, strategy.type);
-
-                if (matchCount === 1) {
-                    uniqueStrategies.push(strategy);
                 }
+                parentFrame = frame;
             }
 
             const best_selector = uniqueStrategies.length > 0 ? uniqueStrategies[0].value : '';
@@ -378,6 +462,7 @@ export const addWorkflowStep = definePageTool({
                 best_selector,
                 strategies: uniqueStrategies,
                 ax_node_meta,
+                frame_selectors: frameSelectors.length > 0 ? frameSelectors : undefined,
             };
 
             void handle.dispose();
@@ -863,20 +948,18 @@ interface WorkflowStep {
 }
 
 async function findElementByStrategies(
-    page: { $: (selector: string) => Promise<unknown>; $x?: (xpath: string) => Promise<unknown[]> },
+    page: Page | Frame,
     strategies: SelectorStrategy[],
 ): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
     for (const strategy of strategies) {
         try {
-            let element: unknown = null;
+            let element: ElementHandle | null = null;
 
             if (strategy.type === 'xpath' || strategy.type === 'text') {
                 // XPath selectors
-                if (page.$x) {
-                    const elements = await page.$x(strategy.value);
-                    if (elements && elements.length > 0) {
-                        element = elements[0];
-                    }
+                const elements = await page.$x(strategy.value);
+                if (elements.length > 0) {
+                    element = elements[0];
                 }
             } else {
                 // CSS selectors
@@ -884,7 +967,7 @@ async function findElementByStrategies(
             }
 
             if (element) {
-                return { element: element as ElementHandle, usedStrategy: strategy };
+                return { element, usedStrategy: strategy };
             }
         } catch {
             // Strategy failed, try next
@@ -1205,8 +1288,9 @@ export const runWorkflow = definePageTool({
                             throw new Error('No selectors available for click action');
                         }
 
+                        const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
                         const result = await findElementByStrategies(
-                            page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            targetFrame,
                             step.selectors.strategies,
                         );
 
@@ -1256,8 +1340,9 @@ export const runWorkflow = definePageTool({
                         }
 
                         if (step.selectors?.strategies) {
+                            const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
                             const result = await findElementByStrategies(
-                                page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                                targetFrame,
                                 step.selectors.strategies,
                             );
 
@@ -1392,8 +1477,9 @@ export const runWorkflow = definePageTool({
                             throw new Error('No selectors available for hover action');
                         }
 
+                        const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
                         const result = await findElementByStrategies(
-                            page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            targetFrame,
                             step.selectors.strategies,
                         );
 
@@ -1434,8 +1520,9 @@ export const runWorkflow = definePageTool({
                             throw new Error('No selectors available for extract action');
                         }
 
+                        const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
                         const result = await findElementByStrategies(
-                            page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            targetFrame,
                             step.selectors.strategies,
                         );
 
@@ -1469,8 +1556,9 @@ export const runWorkflow = definePageTool({
                             throw new Error('No image URL provided for upload_image action');
                         }
 
+                        const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
                         const result = await findElementByStrategies(
-                            page.pptrPage as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                            targetFrame,
                             step.selectors.strategies,
                         );
 
@@ -1655,9 +1743,10 @@ export const simulateWorkflow = definePageTool({
                 const elementActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
 
                 if (elementActions.includes(step.action) && step.selectors?.strategies) {
+                    const targetFrame = await resolveFrame(page, step.selectors.frame_selectors);
                     // Find the target element
                     const result = await findElementByStrategies(
-                        page as unknown as { $: (s: string) => Promise<unknown>; $x: (s: string) => Promise<unknown[]> },
+                        targetFrame,
                         step.selectors.strategies,
                     );
 
@@ -1667,6 +1756,9 @@ export const simulateWorkflow = definePageTool({
 
                     const elementHandle = result.element;
                     const clickPoint = await getElementClickPoint(elementHandle);
+
+                    // Ensure target frame has visual styles injected
+                    await injectSimulationStyles(targetFrame);
 
                     // Highlight the element
                     await elementHandle.evaluate((el: Element) => {
