@@ -957,7 +957,7 @@ async function findElementByStrategies(
 
             if (strategy.type === 'xpath' || strategy.type === 'text') {
                 // XPath selectors
-                const elements = await page.$x(strategy.value);
+                const elements = await page.$$('xpath/' + strategy.value);
                 if (elements.length > 0) {
                     element = elements[0];
                 }
