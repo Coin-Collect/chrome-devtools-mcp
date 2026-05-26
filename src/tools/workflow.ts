@@ -425,7 +425,7 @@ export const addWorkflowStep = definePageTool({
                 }
             }
 
-            const elementFrame = selectorHandle.frame;
+            const elementFrame = selectorHandle.executionContext().frame() ?? request.page.pptrPage.mainFrame();
             const uniqueStrategies = await generateSelectorsForElement(selectorHandle, elementFrame);
 
             // Generate frame selectors pathway if element is inside an iframe
