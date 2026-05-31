@@ -131,6 +131,15 @@ interface SelectorsData {
     frame_selectors?: string[];
 }
 
+export function isCssCompatibleSelector(strategy: SelectorStrategy): boolean {
+    return strategy.type !== 'xpath' && strategy.type !== 'text';
+}
+
+export function pickBestFrameSelector(strategies: SelectorStrategy[]): string {
+    const cssCompatible = strategies.filter(isCssCompatibleSelector);
+    return cssCompatible.length > 0 ? cssCompatible[0].value : '';
+}
+
 async function generateSelectorsForElement(
     handle: ElementHandle<Element>,
     frame: Frame,
@@ -311,7 +320,7 @@ async function generateSelectorsForElement(
     return uniqueStrategies;
 }
 
-async function resolveFrame(
+export async function resolveFrame(
     page: Page,
     frameSelectors: string[] | undefined,
 ): Promise<Frame> {
@@ -321,7 +330,11 @@ async function resolveFrame(
     }
 
     for (const selector of frameSelectors) {
-        const iframeHandle = await currentFrame.$(selector);
+        let iframeHandle = await currentFrame.$(selector);
+        if (!iframeHandle && (selector.startsWith('/') || selector.startsWith('('))) {
+            const iframeHandles = await currentFrame.$$('xpath/' + selector);
+            iframeHandle = iframeHandles.length > 0 ? iframeHandles[0] : null;
+        }
         if (!iframeHandle) {
             throw new Error(`Iframe element not found using selector: ${selector}`);
         }
@@ -448,7 +461,7 @@ export const addWorkflowStep = definePageTool({
                 const frameElementHandle = await frame.frameElement();
                 if (frameElementHandle) {
                     const iframeStrategies = await generateSelectorsForElement(frameElementHandle, parentFrame);
-                    const bestIframeSelector = iframeStrategies.length > 0 ? iframeStrategies[0].value : '';
+                    const bestIframeSelector = pickBestFrameSelector(iframeStrategies);
                     if (bestIframeSelector) {
                         frameSelectors.push(bestIframeSelector);
                     }
