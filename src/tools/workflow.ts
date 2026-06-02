@@ -16,6 +16,11 @@ import { checkNavigationSecurity, validateWhitelistAddition } from '../utils/sec
 import { ToolCategory } from './categories.js';
 import { definePageTool, defineTool } from './ToolDefinition.js';
 import type { ContextPage } from './ToolDefinition.js';
+import type { SelectorStrategy } from './workflowSelectors.js';
+import {
+    pickBestFrameSelector,
+    resolveFrame,
+} from './workflowSelectors.js';
 
 
 export const createWorkflow = defineTool({
@@ -114,12 +119,6 @@ export const listWorkflows = defineTool({
     },
 });
 
-interface SelectorStrategy {
-    type: string;
-    value: string;
-    priority: number;
-}
-
 interface SelectorsData {
     best_selector: string;
     strategies: SelectorStrategy[];
@@ -129,15 +128,6 @@ interface SelectorsData {
         description: string;
     };
     frame_selectors?: string[];
-}
-
-export function isCssCompatibleSelector(strategy: SelectorStrategy): boolean {
-    return strategy.type !== 'xpath' && strategy.type !== 'text';
-}
-
-export function pickBestFrameSelector(strategies: SelectorStrategy[]): string {
-    const cssCompatible = strategies.filter(isCssCompatibleSelector);
-    return cssCompatible.length > 0 ? cssCompatible[0].value : '';
 }
 
 async function generateSelectorsForElement(
@@ -318,34 +308,6 @@ async function generateSelectorsForElement(
     }
 
     return uniqueStrategies;
-}
-
-export async function resolveFrame(
-    page: Page,
-    frameSelectors: string[] | undefined,
-): Promise<Frame> {
-    let currentFrame = page.mainFrame();
-    if (!frameSelectors || frameSelectors.length === 0) {
-        return currentFrame;
-    }
-
-    for (const selector of frameSelectors) {
-        let iframeHandle = await currentFrame.$(selector);
-        if (!iframeHandle && (selector.startsWith('/') || selector.startsWith('('))) {
-            const iframeHandles = await currentFrame.$$('xpath/' + selector);
-            iframeHandle = iframeHandles.length > 0 ? iframeHandles[0] : null;
-        }
-        if (!iframeHandle) {
-            throw new Error(`Iframe element not found using selector: ${selector}`);
-        }
-        const contentFrame = await iframeHandle.contentFrame();
-        if (!contentFrame) {
-            throw new Error(`Could not access contentFrame of iframe: ${selector}`);
-        }
-        currentFrame = contentFrame;
-    }
-
-    return currentFrame;
 }
 
 async function injectSimulationStyles(frame: Page | Frame): Promise<void> {
