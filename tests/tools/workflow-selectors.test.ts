@@ -7,7 +7,7 @@
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
 
-import {pickBestFrameSelector, resolveFrame} from '../../src/tools/workflow.js';
+import {pickBestFrameSelector, resolveFrame} from '../../src/tools/workflowSelectors.js';
 import {html, withMcpContext} from '../utils.js';
 
 describe('workflow selector helpers', () => {
