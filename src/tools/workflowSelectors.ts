@@ -18,7 +18,11 @@ export function isCssCompatibleSelector(strategy: SelectorStrategy): boolean {
 
 export function pickBestFrameSelector(strategies: SelectorStrategy[]): string {
     const cssCompatible = strategies.filter(isCssCompatibleSelector);
-    return cssCompatible.length > 0 ? cssCompatible[0].value : '';
+    if (cssCompatible.length > 0) {
+        return cssCompatible[0].value;
+    }
+
+    return strategies[0]?.value ?? '';
 }
 
 export async function resolveFrame(
