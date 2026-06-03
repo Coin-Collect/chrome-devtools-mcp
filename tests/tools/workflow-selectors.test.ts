@@ -20,6 +20,14 @@ describe('workflow selector helpers', () => {
     assert.strictEqual(selector, 'body > iframe:nth-of-type(1)');
   });
 
+  it('falls back to xpath when no CSS-compatible frame selector exists', () => {
+    const selector = pickBestFrameSelector([
+      {type: 'xpath', value: '//iframe[1]', priority: 10},
+    ]);
+
+    assert.strictEqual(selector, '//iframe[1]');
+  });
+
   it('resolves iframe selectors stored as xpath', async () => {
     await withMcpContext(async (_response, context) => {
       const page = context.getSelectedPptrPage();
