@@ -942,22 +942,30 @@ async function findElementByStrategies(
 ): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
     for (const strategy of strategies) {
         try {
-            let element: ElementHandle | null = null;
-
-            if (strategy.type === 'xpath' || strategy.type === 'text') {
-                // XPath selectors
-                const elements = await page.$$('xpath/' + strategy.value);
-                if (elements.length > 0) {
-                    element = elements[0];
+            const handle = await page.evaluateHandle((selectorValue: string, selectorType: string) => {
+                if (selectorType === 'xpath' || selectorType === 'text') {
+                    const result = document.evaluate(
+                        selectorValue,
+                        document,
+                        null,
+                        XPathResult.FIRST_ORDERED_NODE_TYPE,
+                        null,
+                    );
+                    const node = result.singleNodeValue;
+                    if (node instanceof Element) {
+                        return node;
+                    }
+                    return node?.parentElement ?? null;
                 }
-            } else {
-                // CSS selectors
-                element = await page.$(strategy.value);
-            }
+
+                return document.querySelector(selectorValue);
+            }, strategy.value, strategy.type);
+            const element = handle.asElement() as ElementHandle<Element> | null;
 
             if (element) {
                 return { element, usedStrategy: strategy };
             }
+            void handle.dispose();
         } catch {
             // Strategy failed, try next
             continue;
@@ -970,27 +978,50 @@ async function findElementBySelectors(
     page: Page,
     selectors: SelectorsData,
 ): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
-    try {
-        const targetFrame = await resolveFrame(page, selectors.frame_selectors);
-        const result = await findElementByStrategies(
-            targetFrame,
-            selectors.strategies,
-        );
-        if (result) {
-            return result;
-        }
-    } catch {
-        // Fall back to scanning all frames below. Stored iframe paths can become stale.
-    }
+    const timeoutMs = 5000;
+    const retryDelayMs = 250;
+    const deadline = Date.now() + timeoutMs;
 
-    for (const frame of page.frames()) {
-        const result = await findElementByStrategies(frame, selectors.strategies);
-        if (result) {
-            return result;
+    while (Date.now() <= deadline) {
+        try {
+            const targetFrame = await resolveFrame(page, selectors.frame_selectors);
+            const result = await findElementByStrategies(
+                targetFrame,
+                selectors.strategies,
+            );
+            if (result) {
+                return result;
+            }
+        } catch {
+            // Fall back to scanning all frames below. Stored iframe paths can become stale.
         }
+
+        for (const frame of page.frames()) {
+            const result = await findElementByStrategies(frame, selectors.strategies);
+            if (result) {
+                return result;
+            }
+        }
+
+        await sleep(retryDelayMs);
     }
 
     return null;
+}
+
+function formatSelectorLookupFailure(
+    page: Page,
+    selectors: SelectorsData,
+): string {
+    const frameSelectors = selectors.frame_selectors?.join(' -> ') || '(none)';
+    const strategies = selectors.strategies
+        .map(strategy => `${strategy.type}=${strategy.value}`)
+        .join('; ');
+    const frameUrls = page.frames()
+        .map(frame => frame.url() || '(about:blank)')
+        .join('; ');
+
+    return `Element not found with any selector strategy. Frame selectors: ${frameSelectors}. Tried ${selectors.strategies.length} selector(s) across ${page.frames().length} frame(s): ${strategies}. Frame URLs: ${frameUrls}`;
 }
 
 // Keyboard layout for adjacent key typo simulation
@@ -1310,7 +1341,7 @@ export const runWorkflow = definePageTool({
                         );
 
                         if (!result) {
-                            throw new Error('Element not found with any selector strategy');
+                            throw new Error(formatSelectorLookupFailure(page.pptrPage, step.selectors));
                         }
 
                         response.appendResponseLine(`  Using selector: ${result.usedStrategy.type} = "${result.usedStrategy.value}"`);
@@ -1497,7 +1528,7 @@ export const runWorkflow = definePageTool({
                         );
 
                         if (!result) {
-                            throw new Error('Element not found for hover action');
+                            throw new Error(formatSelectorLookupFailure(page.pptrPage, step.selectors));
                         }
 
                         const elementHandle = result.element;
@@ -1539,7 +1570,7 @@ export const runWorkflow = definePageTool({
                         );
 
                         if (!result) {
-                            throw new Error('Element not found for extract action');
+                            throw new Error(formatSelectorLookupFailure(page.pptrPage, step.selectors));
                         }
 
                         const elementHandle = result.element;
@@ -1574,7 +1605,7 @@ export const runWorkflow = definePageTool({
                         );
 
                         if (!result) {
-                            throw new Error('Element not found for upload_image action');
+                            throw new Error(formatSelectorLookupFailure(page.pptrPage, step.selectors));
                         }
 
                         response.appendResponseLine(`  Downloading image from: ${actionValue}`);
