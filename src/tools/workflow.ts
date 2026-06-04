@@ -966,6 +966,33 @@ async function findElementByStrategies(
     return null;
 }
 
+async function findElementBySelectors(
+    page: Page,
+    selectors: SelectorsData,
+): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
+    try {
+        const targetFrame = await resolveFrame(page, selectors.frame_selectors);
+        const result = await findElementByStrategies(
+            targetFrame,
+            selectors.strategies,
+        );
+        if (result) {
+            return result;
+        }
+    } catch {
+        // Fall back to scanning all frames below. Stored iframe paths can become stale.
+    }
+
+    for (const frame of page.frames()) {
+        const result = await findElementByStrategies(frame, selectors.strategies);
+        if (result) {
+            return result;
+        }
+    }
+
+    return null;
+}
+
 // Keyboard layout for adjacent key typo simulation
 const ADJACENT_KEYS: Record<string, string[]> = {
     q: ['w', 'a'], w: ['q', 'e', 's', 'a'], e: ['w', 'r', 'd', 's'],
@@ -1277,10 +1304,9 @@ export const runWorkflow = definePageTool({
                             throw new Error('No selectors available for click action');
                         }
 
-                        const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
-                        const result = await findElementByStrategies(
-                            targetFrame,
-                            step.selectors.strategies,
+                        const result = await findElementBySelectors(
+                            page.pptrPage,
+                            step.selectors,
                         );
 
                         if (!result) {
@@ -1329,10 +1355,9 @@ export const runWorkflow = definePageTool({
                         }
 
                         if (step.selectors?.strategies) {
-                            const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
-                            const result = await findElementByStrategies(
-                                targetFrame,
-                                step.selectors.strategies,
+                            const result = await findElementBySelectors(
+                                page.pptrPage,
+                                step.selectors,
                             );
 
                             if (result) {
@@ -1466,10 +1491,9 @@ export const runWorkflow = definePageTool({
                             throw new Error('No selectors available for hover action');
                         }
 
-                        const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
-                        const result = await findElementByStrategies(
-                            targetFrame,
-                            step.selectors.strategies,
+                        const result = await findElementBySelectors(
+                            page.pptrPage,
+                            step.selectors,
                         );
 
                         if (!result) {
@@ -1509,10 +1533,9 @@ export const runWorkflow = definePageTool({
                             throw new Error('No selectors available for extract action');
                         }
 
-                        const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
-                        const result = await findElementByStrategies(
-                            targetFrame,
-                            step.selectors.strategies,
+                        const result = await findElementBySelectors(
+                            page.pptrPage,
+                            step.selectors,
                         );
 
                         if (!result) {
@@ -1545,10 +1568,9 @@ export const runWorkflow = definePageTool({
                             throw new Error('No image URL provided for upload_image action');
                         }
 
-                        const targetFrame = await resolveFrame(page.pptrPage, step.selectors.frame_selectors);
-                        const result = await findElementByStrategies(
-                            targetFrame,
-                            step.selectors.strategies,
+                        const result = await findElementBySelectors(
+                            page.pptrPage,
+                            step.selectors,
                         );
 
                         if (!result) {
@@ -1732,11 +1754,10 @@ export const simulateWorkflow = definePageTool({
                 const elementActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
 
                 if (elementActions.includes(step.action) && step.selectors?.strategies) {
-                    const targetFrame = await resolveFrame(page, step.selectors.frame_selectors);
                     // Find the target element
-                    const result = await findElementByStrategies(
-                        targetFrame,
-                        step.selectors.strategies,
+                    const result = await findElementBySelectors(
+                        page,
+                        step.selectors,
                     );
 
                     if (!result) {
@@ -1744,6 +1765,7 @@ export const simulateWorkflow = definePageTool({
                     } else {
 
                     const elementHandle = result.element;
+                    const targetFrame = elementHandle.frame;
                     const clickPoint = await getElementClickPoint(elementHandle);
 
                     // Ensure target frame has visual styles injected
