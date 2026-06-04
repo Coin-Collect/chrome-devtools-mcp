@@ -132,7 +132,6 @@ interface SelectorsData {
 
 async function generateSelectorsForElement(
     handle: ElementHandle<Element>,
-    frame: Frame,
 ): Promise<SelectorStrategy[]> {
     const strategies: SelectorStrategy[] = await handle.evaluate((node: Node) => {
         const results: SelectorStrategy[] = [];
@@ -298,16 +297,7 @@ async function generateSelectorsForElement(
             priority: 11,
         });
 
-        return results;
-    });
-
-    // Sort by priority
-    strategies.sort((a, b) => a.priority - b.priority);
-
-    // Filter out selectors that match more than one element in this frame
-    const uniqueStrategies: SelectorStrategy[] = [];
-    for (const strategy of strategies) {
-        const matchCount = await frame.evaluate((selectorValue: string, selectorType: string) => {
+        const countMatches = (selectorValue: string, selectorType: string): number => {
             try {
                 if (selectorType === 'xpath' || selectorType === 'text') {
                     const result = document.evaluate(
@@ -323,14 +313,15 @@ async function generateSelectorsForElement(
             } catch {
                 return 0;
             }
-        }, strategy.value, strategy.type);
+        };
 
-        if (matchCount === 1) {
-            uniqueStrategies.push(strategy);
-        }
-    }
+        const uniqueResults = results.filter(strategy => countMatches(strategy.value, strategy.type) === 1);
+        return uniqueResults.length > 0 ? uniqueResults : results;
+    });
 
-    return uniqueStrategies;
+    // Sort by priority
+    strategies.sort((a, b) => a.priority - b.priority);
+    return strategies;
 }
 
 async function injectSimulationStyles(frame: Page | Frame): Promise<void> {
@@ -424,7 +415,7 @@ export const addWorkflowStep = definePageTool({
             }
 
             const elementFrame = selectorHandle.frame;
-            const uniqueStrategies = await generateSelectorsForElement(selectorHandle, elementFrame);
+            const uniqueStrategies = await generateSelectorsForElement(selectorHandle);
 
             // Generate frame selectors pathway if element is inside an iframe
             const frameSelectors: string[] = [];
@@ -445,7 +436,7 @@ export const addWorkflowStep = definePageTool({
             for (const frame of framePath) {
                 const frameElementHandle = await frame.frameElement();
                 if (frameElementHandle) {
-                    const iframeStrategies = await generateSelectorsForElement(frameElementHandle, parentFrame);
+                    const iframeStrategies = await generateSelectorsForElement(frameElementHandle);
                     const bestIframeSelector = pickBestFrameSelector(iframeStrategies);
                     if (bestIframeSelector) {
                         frameSelectors.push(bestIframeSelector);
