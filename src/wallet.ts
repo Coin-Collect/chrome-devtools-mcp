@@ -181,6 +181,13 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
     if ('ethereum' in window) return;
 
     type Listener = (...args: unknown[]) => void;
+    type JsonRpcPayload = {
+        id?: number | string | null;
+        jsonrpc?: string;
+        method: string;
+        params?: unknown[] | Record<string, unknown>;
+    };
+    type JsonRpcCallback = (err: unknown, result?: unknown) => void;
     const listeners: Record<string, Listener[]> = {};
     let connected = false;
 
@@ -200,11 +207,26 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
         // ---------- EIP-1193 identification ----------
         isMetaMask: true,
         isRockstar: true,
+        isBraveWallet: false,
+        isCoinbaseWallet: false,
+        isRabby: false,
+        isTrust: false,
 
         // ---------- Legacy properties ----------
         chainId,
         networkVersion: String(parseInt(chainId, 16)),
         selectedAddress: null as string | null,
+        autoRefreshOnNetworkChange: false,
+        _state: {
+            accounts: [] as string[],
+            initialized: true,
+            isConnected: false,
+            isPermanentlyDisconnected: false,
+            isUnlocked: true,
+        },
+        _metamask: {
+            isUnlocked: async () => true,
+        },
 
         // ---------- EIP-1193 connection ----------
         isConnected(): boolean {
@@ -261,6 +283,8 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                     if (!connected) {
                         connected = true;
                         provider.selectedAddress = walletAddress;
+                        provider._state.accounts = [walletAddress];
+                        provider._state.isConnected = true;
                         emit('connect', { chainId });
                         emit('accountsChanged', [walletAddress]);
                     }
@@ -300,6 +324,12 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
 
                 case 'wallet_getPermissions':
                     return [{ parentCapability: 'eth_accounts' }];
+
+                case 'web3_clientVersion':
+                    return 'MetaMask/v11.0.0';
+
+                case 'eth_coinbase':
+                    return walletAddress;
 
                 // ---- Signing (bridged to Node.js) ----
                 case 'personal_sign': {
@@ -347,31 +377,59 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
             return provider.request({ method: 'eth_requestAccounts' });
         },
 
-        send(methodOrPayload: string | { method: string; params?: unknown[] }, callbackOrParams?: unknown) {
+        send(methodOrPayload: string | JsonRpcPayload, callbackOrParams?: unknown) {
             if (typeof methodOrPayload === 'string') {
                 return provider.request({
                     method: methodOrPayload,
                     params: Array.isArray(callbackOrParams) ? callbackOrParams : [],
                 });
             }
-            return provider.request({
+            const responsePromise = provider.request({
                 method: methodOrPayload.method,
                 params: methodOrPayload.params,
             });
+            if (typeof callbackOrParams === 'function') {
+                responsePromise
+                    .then((result) =>
+                        (callbackOrParams as JsonRpcCallback)(null, {
+                            id: methodOrPayload.id,
+                            jsonrpc: methodOrPayload.jsonrpc || '2.0',
+                            result,
+                        }),
+                    )
+                    .catch((error) => (callbackOrParams as JsonRpcCallback)(error));
+                return;
+            }
+            return responsePromise;
         },
 
         sendAsync(
-            payload: { id: number; method: string; params?: unknown[] },
-            callback: (err: unknown, result?: unknown) => void,
+            payload: JsonRpcPayload,
+            callback: JsonRpcCallback,
         ) {
             provider
                 .request({ method: payload.method, params: payload.params })
                 .then((result) =>
-                    callback(null, { id: payload.id, jsonrpc: '2.0', result }),
+                    callback(null, {
+                        id: payload.id,
+                        jsonrpc: payload.jsonrpc || '2.0',
+                        result,
+                    }),
                 )
                 .catch((error) => callback(error));
         },
     };
+
+    Object.defineProperties(provider, {
+        providers: {
+            value: [provider],
+            configurable: true,
+        },
+        selectedProvider: {
+            value: provider,
+            configurable: true,
+        },
+    });
 
     // Install on window
     Object.defineProperty(window, 'ethereum', {
@@ -380,8 +438,40 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
         configurable: true,
     });
 
-    // Announce the provider (EIP-6963 basic support)
+    Object.defineProperty(window, 'web3', {
+        value: {
+            currentProvider: provider,
+        },
+        writable: false,
+        configurable: true,
+    });
+
+    // Announce the provider (legacy initialization event + EIP-6963).
     window.dispatchEvent(new Event('ethereum#initialized'));
+    window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
+        detail: {
+            info: {
+                uuid: '350670db-19fa-4704-a166-e52e178b59d2',
+                name: 'MetaMask',
+                icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
+                rdns: 'io.metamask',
+            },
+            provider,
+        },
+    }));
+    window.addEventListener('eip6963:requestProvider', () => {
+        window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
+            detail: {
+                info: {
+                    uuid: '350670db-19fa-4704-a166-e52e178b59d2',
+                    name: 'MetaMask',
+                    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
+                    rdns: 'io.metamask',
+                },
+                provider,
+            },
+        }));
+    });
 }
 /* eslint-enable @typescript-eslint/no-unused-vars */
 
