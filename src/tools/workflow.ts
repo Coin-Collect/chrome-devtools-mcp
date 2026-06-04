@@ -134,14 +134,33 @@ async function generateSelectorsForElement(
     handle: ElementHandle<Element>,
     frame: Frame,
 ): Promise<SelectorStrategy[]> {
-    const strategies: SelectorStrategy[] = await handle.evaluate((el: Element) => {
+    const strategies: SelectorStrategy[] = await handle.evaluate((node: Node) => {
         const results: SelectorStrategy[] = [];
+        const el = node.nodeType === Node.ELEMENT_NODE
+            ? node as Element
+            : node.parentElement;
+
+        if (!el) {
+            return results;
+        }
+
+        const cssIdent = (value: string): string => CSS.escape(value);
+        const cssString = (value: string): string => JSON.stringify(value);
+        const xpathString = (value: string): string => {
+            if (!value.includes('"')) {
+                return `"${value}"`;
+            }
+            if (!value.includes("'")) {
+                return `'${value}'`;
+            }
+            return `concat(${value.split('"').map(part => `"${part}"`).join(', \'"\', ')})`;
+        };
 
         // 1. ID selector (highest priority)
         if (el.id) {
             results.push({
                 type: 'id',
-                value: `#${el.id}`,
+                value: `#${cssIdent(el.id)}`,
                 priority: 1,
             });
         }
@@ -152,7 +171,7 @@ async function generateSelectorsForElement(
             const attrName = el.hasAttribute('data-testid') ? 'data-testid' : el.hasAttribute('data-test') ? 'data-test' : 'data-cy';
             results.push({
                 type: 'testid',
-                value: `[${attrName}="${testId}"]`,
+                value: `[${attrName}=${cssString(testId)}]`,
                 priority: 2,
             });
         }
@@ -162,7 +181,7 @@ async function generateSelectorsForElement(
         if (ariaLabel) {
             results.push({
                 type: 'aria-label',
-                value: `[aria-label="${ariaLabel}"]`,
+                value: `[aria-label=${cssString(ariaLabel)}]`,
                 priority: 3,
             });
         }
@@ -172,7 +191,7 @@ async function generateSelectorsForElement(
         if (name) {
             results.push({
                 type: 'name',
-                value: `[name="${name}"]`,
+                value: `[name=${cssString(name)}]`,
                 priority: 4,
             });
         }
@@ -182,14 +201,14 @@ async function generateSelectorsForElement(
         if (role && ariaLabel) {
             results.push({
                 type: 'role-name',
-                value: `[role="${role}"][aria-label="${ariaLabel}"]`,
+                value: `[role=${cssString(role)}][aria-label=${cssString(ariaLabel)}]`,
                 priority: 5,
             });
         }
 
         // 6. Class-based selector (with tag)
         if (el.className && typeof el.className === 'string' && el.className.trim()) {
-            const classes = el.className.trim().split(/\s+/).slice(0, 3).join('.');
+            const classes = el.className.trim().split(/\s+/).slice(0, 3).map(cssIdent).join('.');
             results.push({
                 type: 'class',
                 value: `${el.tagName.toLowerCase()}.${classes}`,
@@ -202,7 +221,7 @@ async function generateSelectorsForElement(
         if (el.tagName === 'INPUT' && inputType) {
             results.push({
                 type: 'input-type',
-                value: `input[type="${inputType}"]`,
+                value: `input[type=${cssString(inputType)}]`,
                 priority: 7,
             });
         }
@@ -212,7 +231,7 @@ async function generateSelectorsForElement(
         if (placeholder) {
             results.push({
                 type: 'placeholder',
-                value: `[placeholder="${placeholder}"]`,
+                value: `[placeholder=${cssString(placeholder)}]`,
                 priority: 8,
             });
         }
@@ -222,14 +241,14 @@ async function generateSelectorsForElement(
         if (textContent && textContent.length < 50 && (el.tagName === 'BUTTON' || el.tagName === 'A')) {
             results.push({
                 type: 'text',
-                value: `//${el.tagName.toLowerCase()}[normalize-space()="${textContent}"]`,
+                value: `//${el.tagName.toLowerCase()}[normalize-space()=${xpathString(textContent)}]`,
                 priority: 9,
             });
         }
 
         // 10. XPath with index (fallback)
         const getXPath = (element: Element): string => {
-            if (element.id) return `//*[@id="${element.id}"]`;
+            if (element.id) return `//*[@id=${xpathString(element.id)}]`;
             const parts: string[] = [];
             let current: Element | null = element;
             while (current && current.nodeType === Node.ELEMENT_NODE) {
@@ -257,7 +276,7 @@ async function generateSelectorsForElement(
             while (current && current.nodeType === Node.ELEMENT_NODE) {
                 let selector = current.tagName.toLowerCase();
                 if (current.id) {
-                    selector = `#${current.id}`;
+                    selector = `#${cssIdent(current.id)}`;
                     path.unshift(selector);
                     break;
                 }
@@ -289,17 +308,21 @@ async function generateSelectorsForElement(
     const uniqueStrategies: SelectorStrategy[] = [];
     for (const strategy of strategies) {
         const matchCount = await frame.evaluate((selectorValue: string, selectorType: string) => {
-            if (selectorType === 'xpath' || selectorType === 'text') {
-                const result = document.evaluate(
-                    selectorValue,
-                    document,
-                    null,
-                    XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-                    null,
-                );
-                return result.snapshotLength;
+            try {
+                if (selectorType === 'xpath' || selectorType === 'text') {
+                    const result = document.evaluate(
+                        selectorValue,
+                        document,
+                        null,
+                        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+                        null,
+                    );
+                    return result.snapshotLength;
+                }
+                return document.querySelectorAll(selectorValue).length;
+            } catch {
+                return 0;
             }
-            return document.querySelectorAll(selectorValue).length;
         }, strategy.value, strategy.type);
 
         if (matchCount === 1) {
