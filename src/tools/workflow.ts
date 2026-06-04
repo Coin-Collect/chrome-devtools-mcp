@@ -10,7 +10,7 @@ import path from 'node:path';
 
 import { supabase } from '../supabase.js';
 import { zod } from '../third_party/index.js';
-import type { ElementHandle, KeyInput, Page, Frame } from '../third_party/index.js';
+import type { ElementHandle, KeyInput, Page, Frame, SerializedAXNode } from '../third_party/index.js';
 import { checkNavigationSecurity, validateWhitelistAddition } from '../utils/security.js';
 
 import { ToolCategory } from './categories.js';
@@ -128,6 +128,10 @@ interface SelectorsData {
         description: string;
     };
     frame_selectors?: string[];
+}
+
+function makeAxSelectorValue(role: string, name: string): string {
+    return JSON.stringify({ role, name });
 }
 
 async function generateSelectorsForElement(
@@ -324,6 +328,44 @@ async function generateSelectorsForElement(
     return strategies;
 }
 
+function addAxSelectorStrategies(
+    strategies: SelectorStrategy[],
+    axNodeMeta: SelectorsData['ax_node_meta'],
+): SelectorStrategy[] {
+    const role = axNodeMeta.role.trim().toLowerCase();
+    const name = axNodeMeta.name.trim();
+
+    if (!name) {
+        return strategies;
+    }
+
+    const axStrategies: SelectorStrategy[] = [];
+    if (role) {
+        axStrategies.push({
+            type: 'ax-role-name',
+            value: makeAxSelectorValue(role, name),
+            priority: 2.5,
+        });
+    }
+    axStrategies.push({
+        type: 'ax-name',
+        value: name,
+        priority: 8.5,
+    });
+
+    const seen = new Set(strategies.map(strategy => `${strategy.type}\u0000${strategy.value}`));
+    for (const strategy of axStrategies) {
+        const key = `${strategy.type}\u0000${strategy.value}`;
+        if (!seen.has(key)) {
+            strategies.push(strategy);
+            seen.add(key);
+        }
+    }
+
+    strategies.sort((a, b) => a.priority - b.priority);
+    return strategies;
+}
+
 async function injectSimulationStyles(frame: Page | Frame): Promise<void> {
     await frame.evaluate(() => {
         const existingStyle = document.getElementById('__wf_sim_style');
@@ -415,7 +457,10 @@ export const addWorkflowStep = definePageTool({
             }
 
             const elementFrame = selectorHandle.frame;
-            const uniqueStrategies = await generateSelectorsForElement(selectorHandle);
+            const uniqueStrategies = addAxSelectorStrategies(
+                await generateSelectorsForElement(selectorHandle),
+                ax_node_meta,
+            );
 
             // Generate frame selectors pathway if element is inside an iframe
             const frameSelectors: string[] = [];
@@ -944,15 +989,92 @@ async function findElementByStrategies(
         try {
             let element: ElementHandle | null = null;
 
-            if (strategy.type === 'xpath' || strategy.type === 'text') {
+            if (strategy.type === 'ax-role-name' || strategy.type === 'ax-name') {
+                const elementHandle = await page.evaluateHandle((selectorType: string, selectorValue: string) => {
+                    const normalize = (value: string | null | undefined): string => (value || '').replace(/\s+/g, ' ').trim();
+                    const allElements = (root: Document | ShadowRoot): Element[] => {
+                        const elements: Element[] = [];
+                        for (const element of root.querySelectorAll('*')) {
+                            elements.push(element);
+                            if (element.shadowRoot) {
+                                elements.push(...allElements(element.shadowRoot));
+                            }
+                        }
+                        return elements;
+                    };
+                    const implicitRole = (element: Element): string => {
+                        const tagName = element.tagName.toLowerCase();
+                        if (tagName === 'button') return 'button';
+                        if (tagName === 'a' && element.hasAttribute('href')) return 'link';
+                        if (tagName === 'input') {
+                            const type = element.getAttribute('type') || 'text';
+                            if (['button', 'submit', 'reset'].includes(type)) return 'button';
+                            if (['checkbox', 'radio'].includes(type)) return type;
+                            return 'textbox';
+                        }
+                        if (tagName === 'textarea') return 'textbox';
+                        if (tagName === 'select') return 'combobox';
+                        return '';
+                    };
+                    const accessibleName = (element: Element): string => normalize(
+                        element.getAttribute('aria-label') ||
+                        element.getAttribute('title') ||
+                        element.getAttribute('alt') ||
+                        (element as HTMLInputElement).value ||
+                        element.textContent,
+                    );
+                    const parsed = selectorType === 'ax-role-name'
+                        ? JSON.parse(selectorValue) as { role: string; name: string }
+                        : { role: '', name: selectorValue };
+                    const expectedRole = normalize(parsed.role).toLowerCase();
+                    const expectedName = normalize(parsed.name);
+
+                    for (const element of allElements(document)) {
+                        const role = normalize(element.getAttribute('role') || implicitRole(element)).toLowerCase();
+                        const name = accessibleName(element);
+                        if (expectedRole && role !== expectedRole) {
+                            continue;
+                        }
+                        if (name === expectedName) {
+                            return element;
+                        }
+                    }
+                    return null;
+                }, strategy.type, strategy.value);
+                element = elementHandle.asElement() as ElementHandle<Element> | null;
+                if (!element) {
+                    void elementHandle.dispose();
+                }
+            } else if (strategy.type === 'xpath' || strategy.type === 'text') {
                 // XPath selectors
                 const elements = await page.$$('xpath/' + strategy.value);
                 if (elements.length > 0) {
                     element = elements[0];
                 }
             } else {
-                // CSS selectors
-                element = await page.$(strategy.value);
+                const elementHandle = await page.evaluateHandle((selectorValue: string) => {
+                    const query = (root: Document | ShadowRoot): Element | null => {
+                        const match = root.querySelector(selectorValue);
+                        if (match) {
+                            return match;
+                        }
+                        for (const element of root.querySelectorAll('*')) {
+                            if (!element.shadowRoot) {
+                                continue;
+                            }
+                            const shadowMatch = query(element.shadowRoot);
+                            if (shadowMatch) {
+                                return shadowMatch;
+                            }
+                        }
+                        return null;
+                    };
+                    return query(document);
+                }, strategy.value);
+                element = elementHandle.asElement() as ElementHandle<Element> | null;
+                if (!element) {
+                    void elementHandle.dispose();
+                }
             }
 
             if (element) {
@@ -966,28 +1088,98 @@ async function findElementByStrategies(
     return null;
 }
 
+async function findElementByAccessibilitySnapshot(
+    page: Page,
+    strategies: SelectorStrategy[],
+): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
+    const axStrategies = strategies.filter(strategy =>
+        strategy.type === 'ax-role-name' || strategy.type === 'ax-name',
+    );
+    if (axStrategies.length === 0) {
+        return null;
+    }
+
+    const snapshot = await page.accessibility.snapshot({
+        includeIframes: true,
+        interestingOnly: false,
+    });
+    if (!snapshot) {
+        return null;
+    }
+
+    const normalize = (value: unknown): string => String(value || '').replace(/\s+/g, ' ').trim();
+    const matches = (node: SerializedAXNode, strategy: SelectorStrategy): boolean => {
+        if (strategy.type === 'ax-name') {
+            return normalize(node.name) === normalize(strategy.value);
+        }
+        const parsed = JSON.parse(strategy.value) as { role: string; name: string };
+        return normalize(node.role).toLowerCase() === normalize(parsed.role).toLowerCase() &&
+            normalize(node.name) === normalize(parsed.name);
+    };
+
+    const walk = async (node: SerializedAXNode): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> => {
+        for (const strategy of axStrategies) {
+            if (!matches(node, strategy)) {
+                continue;
+            }
+            const handle = await node.elementHandle();
+            const element = handle?.asElement() as ElementHandle<Element> | null;
+            if (element) {
+                return { element, usedStrategy: strategy };
+            }
+            void handle?.dispose();
+        }
+
+        for (const child of node.children || []) {
+            const result = await walk(child);
+            if (result) {
+                return result;
+            }
+        }
+
+        return null;
+    };
+
+    return await walk(snapshot);
+}
+
 async function findElementBySelectors(
     page: Page,
     selectors: SelectorsData,
 ): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
-    try {
-        const targetFrame = await resolveFrame(page, selectors.frame_selectors);
-        const result = await findElementByStrategies(
-            targetFrame,
-            selectors.strategies,
-        );
-        if (result) {
-            return result;
-        }
-    } catch {
-        // Fall back to scanning all frames below. Stored iframe paths can become stale.
-    }
+    const deadline = Date.now() + 5000;
+    const strategies = addAxSelectorStrategies(
+        [...selectors.strategies],
+        selectors.ax_node_meta,
+    );
 
-    for (const frame of page.frames()) {
-        const result = await findElementByStrategies(frame, selectors.strategies);
-        if (result) {
-            return result;
+    while (Date.now() <= deadline) {
+        try {
+            const targetFrame = await resolveFrame(page, selectors.frame_selectors);
+            const result = await findElementByStrategies(
+                targetFrame,
+                strategies,
+            );
+            if (result) {
+                return result;
+            }
+        } catch {
+            // Fall back to scanning all frames below. Stored iframe paths can become stale.
         }
+
+        for (const frame of page.frames()) {
+            const result = await findElementByStrategies(frame, strategies);
+            if (result) {
+                return result;
+            }
+        }
+
+        const axResult = await findElementByAccessibilitySnapshot(page, strategies);
+        if (axResult) {
+            return axResult;
+        }
+
+        await sleep(250);
     }
 
     return null;
