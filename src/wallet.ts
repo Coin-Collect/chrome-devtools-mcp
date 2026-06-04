@@ -298,6 +298,9 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                 case 'net_version':
                     return String(parseInt(chainId, 16));
 
+                case 'eth_gasPrice':
+                    return '0x6fc23ac00';
+
                 // ---- Chain management ----
                 case 'wallet_switchEthereumChain': {
                     const req = p[0];
