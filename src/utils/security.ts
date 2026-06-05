@@ -6,7 +6,24 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import net from 'node:net';
+
+export async function resolveWhitelistPath(): Promise<string> {
+    const cwdWhitelistPath = path.resolve(process.cwd(), 'whitelist.json');
+    try {
+        await fs.access(cwdWhitelistPath);
+        return cwdWhitelistPath;
+    } catch {
+        const homeWhitelistPath = path.join(os.homedir(), 'rockstarx', 'whitelist.json');
+        try {
+            await fs.access(homeWhitelistPath);
+            return homeWhitelistPath;
+        } catch {
+            return cwdWhitelistPath;
+        }
+    }
+}
 
 export async function checkNavigationSecurity(urlString: string): Promise<void> {
     let url: URL;
@@ -33,7 +50,7 @@ export async function checkNavigationSecurity(urlString: string): Promise<void> 
         throw new Error(`Security Violation: Navigating to localhost is not allowed (${url.hostname}).`);
     }
 
-    const whitelistPath = path.resolve(process.cwd(), 'whitelist.json');
+    const whitelistPath = await resolveWhitelistPath();
     let whitelist: string[] = [];
     try {
         const data = await fs.readFile(whitelistPath, 'utf8');
