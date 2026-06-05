@@ -74,20 +74,54 @@ export const createWorkflow = defineTool({
 
 export const listWorkflows = defineTool({
     name: 'list_workflows',
-    description: 'Lists all workflows and their steps from the database',
+    description: 'Lists workflows from the database, optionally filtered by website URL. Steps are hidden by default and can be included on demand.',
     annotations: {
         category: ToolCategory.INPUT,
         readOnlyHint: true,
     },
-    schema: {},
-    handler: async (_request, response) => {
-        const { data, error } = await supabase
-            .from('workflows')
-            .select(`
-                *,
-                workflow_steps (*)
-            `)
-            .order('created_at', { ascending: false });
+    schema: {
+        website_url: zod
+            .string()
+            .optional()
+            .describe('Optional website URL to filter workflows by. Matches the stored workflow website_url value.'),
+        show_steps: zod
+            .boolean()
+            .optional()
+            .describe('Whether to include workflow steps in the listing. Default is false.'),
+    },
+    handler: async (request, response) => {
+        const { website_url, show_steps = false } = request.params;
+
+        let data: any[] | null = null;
+        let error: { message: string } | null = null;
+
+        if (show_steps) {
+            const result = website_url
+                ? await supabase
+                    .from('workflows')
+                    .select('*, workflow_steps (*)')
+                    .eq('website_url', website_url)
+                    .order('created_at', { ascending: false })
+                : await supabase
+                    .from('workflows')
+                    .select('*, workflow_steps (*)')
+                    .order('created_at', { ascending: false });
+            data = result.data as any[] | null;
+            error = result.error;
+        } else {
+            const result = website_url
+                ? await supabase
+                    .from('workflows')
+                    .select('*')
+                    .eq('website_url', website_url)
+                    .order('created_at', { ascending: false })
+                : await supabase
+                    .from('workflows')
+                    .select('*')
+                    .order('created_at', { ascending: false });
+            data = result.data as any[] | null;
+            error = result.error;
+        }
 
         if (error) {
             throw new Error(`Failed to list workflows: ${error.message}`);
@@ -105,13 +139,13 @@ export const listWorkflows = defineTool({
             if (workflow.description) response.appendResponseLine(`  Description: ${workflow.description}`);
             if (workflow.success_criteria) response.appendResponseLine(`  Success Criteria: ${workflow.success_criteria}`);
 
-            if (workflow.workflow_steps && workflow.workflow_steps.length > 0) {
+            if (show_steps && workflow.workflow_steps && workflow.workflow_steps.length > 0) {
                 response.appendResponseLine('  Steps:');
                 const sortedSteps = workflow.workflow_steps.sort((a: any, b: any) => a.step_order - b.step_order);
                 for (const step of sortedSteps) {
                     response.appendResponseLine(`    ${step.step_order}. ${step.action}: ${step.description || ''} (${step.action_value || ''})`);
                 }
-            } else {
+            } else if (show_steps) {
                 response.appendResponseLine('  No steps defined for this workflow.');
             }
             response.appendResponseLine('---');
