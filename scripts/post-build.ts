@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execSync } from 'node:child_process';
+import * as readline from 'node:readline';
 
 const BUILD_DIR = path.join(process.cwd(), 'build');
 
@@ -98,14 +99,44 @@ export const ExperimentName = {
 
   copyDevToolsDescriptionFiles();
   await copyProjectToHomedir();
-  copySkillToCodex();
+  await copySkillToCodex();
 }
 
-function copySkillToCodex() {
+async function askYesNo(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.log('Skipping .codex skill copy because the process is not interactive.');
+    return false;
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await new Promise<string>((resolve) => {
+      rl.question(`${question} [y/N] `, resolve);
+    });
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
+
+async function copySkillToCodex() {
   const codexDir = path.join(os.homedir(), '.codex');
   if (!fs.existsSync(codexDir)) {
     return;
   }
+
+  const shouldCopy = await askYesNo(
+    'Copy the rockstar-cli skill into your Codex skills directory now?',
+  );
+  if (!shouldCopy) {
+    console.log('Skipped copying rockstar-cli skill to .codex.');
+    return;
+  }
+
   const skillSrc = path.join(process.cwd(), 'skills', 'rockstar-cli');
   const skillDest = path.join(codexDir, 'skills', 'rockstar-cli');
   try {
