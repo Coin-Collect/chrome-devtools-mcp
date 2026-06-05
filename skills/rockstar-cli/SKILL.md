@@ -71,7 +71,9 @@ These tools simulate natural human behavior including:
 ```bash
 rockstar create_workflow "Login Flow"                                        # Create a new workflow
 rockstar create_workflow "Login Flow" --website_url "https://app.example.com" --description "Automates login"  # Create with metadata
-rockstar list_workflows                                                      # List all workflows and their steps
+rockstar list_workflows                                                      # List workflows without steps
+rockstar list_workflows --show_steps                                          # List workflows with steps
+rockstar list_workflows --website_url "https://app.example.com"             # Filter by website URL
 ```
 
 ### Adding Steps to a Workflow
