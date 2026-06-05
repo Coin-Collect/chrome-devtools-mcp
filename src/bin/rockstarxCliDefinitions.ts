@@ -103,9 +103,22 @@ export const commands: Commands = {
     },
   },
   list_workflows: {
-    description: 'Lists all workflows and their steps from the database',
+    description: 'Lists workflows from the database, optionally filtered by website URL. Steps are hidden by default and can be included on demand.',
     category: 'Input automation',
-    args: {},
+    args: {
+      website_url: {
+        name: 'website_url',
+        type: 'string',
+        description: 'Optional website URL to filter workflows by. Matches the stored workflow website_url value.',
+        required: false,
+      },
+      show_steps: {
+        name: 'show_steps',
+        type: 'boolean',
+        description: 'Whether to include workflow steps in the listing. Default is false.',
+        required: false,
+      },
+    },
   },
   add_workflow_step: {
     description: 'Adds or updates a step in a workflow. If step_order exists, updates it. If not provided, appends as next step.',
