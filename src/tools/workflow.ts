@@ -11,7 +11,7 @@ import path from 'node:path';
 import { supabase } from '../supabase.js';
 import { zod } from '../third_party/index.js';
 import type { ElementHandle, KeyInput, Page, Frame, SerializedAXNode } from '../third_party/index.js';
-import { checkNavigationSecurity, validateWhitelistAddition } from '../utils/security.js';
+import { checkNavigationSecurity, resolveWhitelistPath, validateWhitelistAddition } from '../utils/security.js';
 
 import { ToolCategory } from './categories.js';
 import { definePageTool, defineTool } from './ToolDefinition.js';
@@ -594,7 +594,7 @@ export const addUrlToWhitelist = defineTool({
         const { url } = request.params;
         const hostname = validateWhitelistAddition(url);
 
-        const whitelistPath = path.resolve(process.cwd(), 'whitelist.json');
+        const whitelistPath = await resolveWhitelistPath();
         let whitelist: string[] = [];
         try {
             const data = await fs.readFile(whitelistPath, 'utf8');
