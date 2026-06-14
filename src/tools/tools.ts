@@ -22,7 +22,6 @@ import type {ParsedArguments} from '../bin/chrome-devtools-mcp-cli-options.js';
 // import * as slimTools from './slim/tools.js';
 // import * as snapshotTools from './snapshot.js';
 import {
-  addUrlToWhitelist,
   addWorkflowStep,
   clickAtLikeHuman,
   clickLikeHuman,
@@ -40,7 +39,6 @@ export const createTools = (args: ParsedArguments) => {
     createWorkflow,
     listWorkflows,
     addWorkflowStep,
-    addUrlToWhitelist,
     runWorkflow,
     simulateWorkflow,
     clickLikeHuman,
