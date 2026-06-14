@@ -5,13 +5,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import fs from 'node:fs/promises';
-import path from 'node:path';
-
 import { supabase } from '../supabase.js';
 import { zod } from '../third_party/index.js';
 import type { ElementHandle, KeyInput, Page, Frame, SerializedAXNode } from '../third_party/index.js';
-import { checkNavigationSecurity, resolveWhitelistPath, validateWhitelistAddition } from '../utils/security.js';
+import { checkNavigationSecurity } from '../utils/security.js';
 
 import { ToolCategory } from './categories.js';
 import { definePageTool, defineTool } from './ToolDefinition.js';
@@ -613,43 +610,6 @@ export const addWorkflowStep = definePageTool({
         }
     },
 });
-
-export const addUrlToWhitelist = defineTool({
-    name: 'add_url_to_whitelist',
-    description: 'Adds a URL or domain to the whitelist.json file to allow navigation.',
-    annotations: {
-        category: ToolCategory.INPUT,
-        readOnlyHint: false,
-    },
-    schema: {
-        url: zod.string().describe('The URL or domain to add to the whitelist, e.g., "google.com" or "https://api.github.com"'),
-    },
-    handler: async (request, response) => {
-        const { url } = request.params;
-        const hostname = validateWhitelistAddition(url);
-
-        const whitelistPath = await resolveWhitelistPath();
-        let whitelist: string[] = [];
-        try {
-            const data = await fs.readFile(whitelistPath, 'utf8');
-            whitelist = JSON.parse(data);
-            if (!Array.isArray(whitelist)) {
-                whitelist = [];
-            }
-        } catch (e) {
-            // File doesn't exist or is invalid, start fresh
-        }
-
-        if (!whitelist.includes(hostname)) {
-            whitelist.push(hostname);
-            await fs.writeFile(whitelistPath, JSON.stringify(whitelist, null, 2), 'utf8');
-            response.appendResponseLine(`Added ${hostname} to whitelist by creating or updating whitelist.json.`);
-        } else {
-            response.appendResponseLine(`${hostname} is already in the whitelist.json.`);
-        }
-    },
-});
-
 
 // Human-like timing utilities
 function gaussianRandom(mean: number, stdDev: number): number {
