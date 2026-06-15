@@ -17,10 +17,10 @@ import type {ParsedArguments} from '../bin/chrome-devtools-mcp-cli-options.js';
 // import * as pagesTools from './pages.js';
 // import * as performanceTools from './performance.js';
 // import * as screencastTools from './screencast.js';
-// import * as screenshotTools from './screenshot.js';
+import * as screenshotTools from './screenshot.js';
 // import * as scriptTools from './script.js';
 // import * as slimTools from './slim/tools.js';
-// import * as snapshotTools from './snapshot.js';
+import * as snapshotTools from './snapshot.js';
 import {
   addWorkflowStep,
   clickAtLikeHuman,
@@ -36,6 +36,8 @@ import type {DefinedPageTool, ToolDefinition} from './ToolDefinition.js';
 
 export const createTools = (args: ParsedArguments) => {
   const rawTools = [
+    ...Object.values(snapshotTools),
+    ...Object.values(screenshotTools),
     createWorkflow,
     listWorkflows,
     addWorkflowStep,
