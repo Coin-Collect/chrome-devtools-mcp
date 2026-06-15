@@ -33,6 +33,11 @@ interface WalletPage {
         address: string,
         chainId: string,
     ): Promise<{ identifier: string }>;
+    evaluate(
+        fn: (address: string, chainId: string) => void,
+        address: string,
+        chainId: string,
+    ): Promise<unknown>;
     exposeFunction(
         name: string,
         fn: (msg: string) => Promise<string>,
@@ -534,4 +539,17 @@ export async function injectEthereumProvider(page: WalletPage): Promise<void> {
         config.address,
         POLYGON_CHAIN_ID,
     );
+
+    // 3. Popups can be discovered after their initial document exists.
+    //    Inject into the current document as well; the script is idempotent.
+    try {
+        await page.evaluate(
+            ethereumProviderScript,
+            config.address,
+            POLYGON_CHAIN_ID,
+        );
+    } catch {
+        // The page may be navigating or already closed. Future documents are
+        // still covered by evaluateOnNewDocument above.
+    }
 }
