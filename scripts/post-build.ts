@@ -12,6 +12,18 @@ import * as readline from 'node:readline';
 
 const BUILD_DIR = path.join(process.cwd(), 'build');
 
+function printRockstarLogo(): void {
+  console.log('');
+  console.log('  ____            _        _                 ');
+  console.log(' |  _ \\ ___   ___| | _____| |_ _ __ __ _ ___ ');
+  console.log(" | |_) / _ \\ / __| |/ / _ \\ __| '__/ _` / __|");
+  console.log(' |  _ < (_) | (__|   <  __/ |_| | | (_| \\__ \\');
+  console.log(' |_| \\_\\___/ \\___|_|\\_\\___|\\__|_|  \\__,_|___/');
+  console.log('                                              ');
+  console.log('           Rockstar build complete            ');
+  console.log('');
+}
+
 /**
  * Writes content to a file.
  * @param filePath The path to the file.
@@ -211,6 +223,7 @@ async function copyProjectToHomedir() {
     console.log('Linking package globally...');
     execSync('npm link', { cwd: destDir, stdio: 'inherit' });
     console.log('Rockstar CLI is now available globally!');
+    printRockstarLogo();
   } catch (error) {
     console.error(`Failed to copy project to homedir:`, error);
   }
