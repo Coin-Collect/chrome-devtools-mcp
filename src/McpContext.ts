@@ -95,6 +95,7 @@ export class McpContext implements Context {
 
   #nextSnapshotId = 1;
   #traceResults: TraceResult[] = [];
+  #bootstrappedPages = new WeakSet<Page>();
 
   #locatorClass: typeof Locator;
   #options: McpContextOptions;
@@ -134,9 +135,11 @@ export class McpContext implements Context {
     await this.#networkCollector.init(pages);
     await this.#consoleCollector.init(pages);
     await this.#devtoolsUniverseManager.init(pages);
+    this.browser.on('targetcreated', this.#onTargetCreated);
   }
 
   dispose() {
+    this.browser.off('targetcreated', this.#onTargetCreated);
     this.#networkCollector.dispose();
     this.#consoleCollector.dispose();
     this.#devtoolsUniverseManager.dispose();
@@ -448,10 +451,31 @@ export class McpContext implements Context {
   selectPage(newPage: McpPage): void {
     this.#selectedPage = newPage;
     this.#updateSelectedPageTimeouts();
-    void applyStealthPatches(newPage.pptrPage).catch((error: unknown) => {
+    this.#bootstrapPage(newPage.pptrPage);
+  }
+
+  #onTargetCreated = async (target: Target) => {
+    try {
+      const page = await target.page();
+      if (!page) {
+        return;
+      }
+      this.#bootstrapPage(page);
+    } catch (error) {
+      this.logger('Error bootstrapping target page', error);
+    }
+  };
+
+  #bootstrapPage(page: Page): void {
+    if (this.#bootstrappedPages.has(page)) {
+      return;
+    }
+    this.#bootstrappedPages.add(page);
+
+    void applyStealthPatches(page).catch((error: unknown) => {
       this.logger('Error applying stealth patches', error);
     });
-    void injectEthereumProvider(newPage.pptrPage).catch((error: unknown) => {
+    void injectEthereumProvider(page).catch((error: unknown) => {
       this.logger('Error injecting Ethereum provider', error);
     });
   }
@@ -529,6 +553,7 @@ export class McpContext implements Context {
       if (!mcpPage) {
         mcpPage = new McpPage(page, this.#nextPageId++);
         this.#mcpPages.set(page, mcpPage);
+        this.#bootstrapPage(page);
         // We emulate a focused page for all pages to support multi-agent workflows.
         void page.emulateFocusedPage(true).catch(error => {
           this.logger('Error turning on focused page emulation', error);
