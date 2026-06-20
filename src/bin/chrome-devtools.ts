@@ -37,7 +37,12 @@ async function start(args: string[]) {
   logDisclaimers(parseArguments(VERSION, combinedArgs));
 }
 
-const defaultArgs = ['--viaCli', '--experimentalStructuredContent'];
+const defaultArgs = [
+  '--viaCli',
+  '--experimentalStructuredContent',
+  '--no-performance-crux',
+  '--no-usage-statistics',
+];
 
 const startCliOptions = {
   ...cliOptions,
