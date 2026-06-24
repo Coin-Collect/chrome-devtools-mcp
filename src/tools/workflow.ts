@@ -1388,6 +1388,39 @@ async function withPulseFrame<T>(page: Page, actionFn: () => Promise<T>): Promis
     }
 }
 
+async function runAndCapturePopup(
+    page: Page,
+    actionFn: () => Promise<void>,
+    timeout = 1_000,
+): Promise<Page | undefined> {
+    let popupPage: Page | undefined;
+    let resolvePopup: (page: Page) => void;
+    const popupPromise = new Promise<Page>((resolve) => {
+        resolvePopup = resolve;
+    });
+    const onPopup = (popup: Page | null) => {
+        if (!popup) {
+            return;
+        }
+        popupPage = popup;
+        resolvePopup(popup);
+    };
+
+    page.on('popup', onPopup);
+    try {
+        await actionFn();
+        if (popupPage) {
+            return popupPage;
+        }
+        return await Promise.race([
+            popupPromise,
+            sleep(timeout).then(() => undefined),
+        ]);
+    } finally {
+        page.off('popup', onPopup);
+    }
+}
+
 export const runWorkflow = definePageTool({
     name: 'run_workflow',
     description: 'Runs a workflow or a specific step. Executes actions with human-like timing and robust selector fallbacks. Use {{variable_name}} in action_value and pass runtime values via the variables parameter.',
@@ -1401,7 +1434,7 @@ export const runWorkflow = definePageTool({
         variables: zod.record(zod.string(), zod.string()).optional().describe('Key-value pairs to resolve {{variable_name}} placeholders in action_value fields. Example: {"username": "john", "password": "secret"}'),
     },
     handler: async (request, response, context) => {
-        const page = request.page;
+        let page = request.page;
         return withPulseFrame(page.pptrPage, async () => {
             const { workflow_id, step_order, variables } = request.params;
             const vars: Record<string, string> = variables || {};
@@ -1512,24 +1545,35 @@ export const runWorkflow = definePageTool({
                             throw new Error('Could not determine element position for click');
                         }
 
-                        await page.waitForEventsAfterAction(async () => {
-                            // Move mouse naturally along a Bezier curve
-                            await moveMouseNaturally(
-                                page.pptrPage.mouse,
-                                lastMouseX, lastMouseY,
-                                center.x, center.y,
-                            );
-                            lastMouseX = center.x;
-                            lastMouseY = center.y;
+                        const popupPage = await runAndCapturePopup(
+                            page.pptrPage,
+                            async () => {
+                                await page.waitForEventsAfterAction(async () => {
+                                    // Move mouse naturally along a Bezier curve
+                                    await moveMouseNaturally(
+                                        page.pptrPage.mouse,
+                                        lastMouseX, lastMouseY,
+                                        center.x, center.y,
+                                    );
+                                    lastMouseX = center.x;
+                                    lastMouseY = center.y;
 
-                            // Hover dwell: user reads/confirms before clicking (100-300ms)
-                            await sleep(humanDelay(180, 0.4));
+                                    // Hover dwell: user reads/confirms before clicking (100-300ms)
+                                    await sleep(humanDelay(180, 0.4));
 
-                            // Natural mousedown → hold → mouseup
-                            await page.pptrPage.mouse.down();
-                            await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25)))); // Hold 50-150ms
-                            await page.pptrPage.mouse.up();
-                        });
+                                    // Natural mousedown → hold → mouseup
+                                    await page.pptrPage.mouse.down();
+                                    await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25)))); // Hold 50-150ms
+                                    await page.pptrPage.mouse.up();
+                                });
+                            },
+                        );
+
+                        if (popupPage) {
+                            page = await context.selectPptrPage(popupPage);
+                            await injectSymbolicCursor(page.pptrPage);
+                            response.appendResponseLine('  Selected newly opened page.');
+                        }
 
                         executionResults.push({ step: step.step_order, action: 'click', success: true, details: `Clicked using ${result.usedStrategy.type}` });
                         break;
