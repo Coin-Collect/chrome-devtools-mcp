@@ -454,6 +454,13 @@ export class McpContext implements Context {
     this.#bootstrapPage(newPage.pptrPage);
   }
 
+  async selectPptrPage(page: Page): Promise<McpPage> {
+    await this.createPagesSnapshot();
+    const mcpPage = this.#getMcpPage(page);
+    this.selectPage(mcpPage);
+    return mcpPage;
+  }
+
   #onTargetCreated = async (target: Target) => {
     try {
       const page = await target.page();
