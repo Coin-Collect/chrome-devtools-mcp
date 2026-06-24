@@ -152,6 +152,7 @@ export type Context = Readonly<{
   ): Promise<ContextPage>;
   closePage(pageId: number): Promise<void>;
   selectPage(page: ContextPage): void;
+  selectPptrPage(page: Page): Promise<ContextPage>;
   restoreEmulation(page: ContextPage): Promise<void>;
   emulate(
     options: {
