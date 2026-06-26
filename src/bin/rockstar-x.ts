@@ -44,6 +44,23 @@ const defaultArgs = [
   '--no-usage-statistics',
 ];
 
+function parseJsonObjectArg(argName: string, value: unknown): unknown {
+  if (typeof value !== 'string' || !['choices', 'variables'].includes(argName)) {
+    return value;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // Let the tool schema produce the final validation error.
+  }
+
+  return value;
+}
+
 const startCliOptions = {
   ...cliOptions,
 } as Partial<typeof cliOptions>;
@@ -225,7 +242,7 @@ for (const [commandName, commandDef] of Object.entries(commands)) {
         const commandArgs: Record<string, unknown> = {};
         for (const argName of Object.keys(args)) {
           if (argName in argv) {
-            commandArgs[argName] = argv[argName];
+            commandArgs[argName] = parseJsonObjectArg(argName, argv[argName]);
           }
         }
 
