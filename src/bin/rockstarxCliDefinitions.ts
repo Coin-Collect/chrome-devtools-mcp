@@ -135,7 +135,7 @@ export const commands: Commands = {
         type: 'string',
         description: 'The action type for this step',
         required: true,
-        enum: ['click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image'],
+        enum: ['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image'],
       },
       uid: {
         name: 'uid',
@@ -143,10 +143,16 @@ export const commands: Commands = {
         description: 'The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll actions.',
         required: false,
       },
+      choices: {
+        name: 'choices',
+        type: 'string',
+        description: 'For choice_click actions, a JSON object mapping choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.',
+        required: false,
+      },
       action_value: {
         name: 'action_value',
         type: 'string',
-        description: 'Value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image)',
+        description: 'Value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image, or choice key/template for choice_click)',
         required: false,
       },
       step_description: {
