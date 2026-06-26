@@ -2147,7 +2147,7 @@ export const clickLikeHuman = definePageTool({
     schema: {
         uid: zod.string().describe('The uid of an element on the page from the page content snapshot'),
     },
-    handler: async (request, response) => {
+    handler: async (request, response, context) => {
         const page = request.page;
         return withPulseFrame(page.pptrPage, async () => {
             const handle = await page.getElementByUid(request.params.uid);
@@ -2177,11 +2177,22 @@ export const clickLikeHuman = definePageTool({
             await sleep(humanDelay(180, 0.4));
 
             // Natural mousedown → hold → mouseup
-            await page.waitForEventsAfterAction(async () => {
-                await page.pptrPage.mouse.down();
-                await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
-                await page.pptrPage.mouse.up();
-            });
+            const popupPage = await runAndCapturePopup(
+                page.pptrPage,
+                async () => {
+                    await page.waitForEventsAfterAction(async () => {
+                        await page.pptrPage.mouse.down();
+                        await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
+                        await page.pptrPage.mouse.up();
+                    });
+                },
+            );
+
+            if (popupPage) {
+                const selectedPage = await context.selectPptrPage(popupPage);
+                await injectSymbolicCursor(selectedPage.pptrPage);
+                response.appendResponseLine('Selected newly opened page.');
+            }
 
             await removeSymbolicCursor(page.pptrPage);
 
@@ -2294,7 +2305,7 @@ export const clickAtLikeHuman = definePageTool({
         x: zod.number().describe('The x coordinate'),
         y: zod.number().describe('The y coordinate'),
     },
-    handler: async (request, response) => {
+    handler: async (request, response, context) => {
         const page = request.page;
         return withPulseFrame(page.pptrPage, async () => {
             const { x, y } = request.params;
@@ -2318,11 +2329,22 @@ export const clickAtLikeHuman = definePageTool({
         await sleep(humanDelay(180, 0.4));
 
         // Natural mousedown → hold → mouseup
-        await page.waitForEventsAfterAction(async () => {
-            await page.pptrPage.mouse.down();
-            await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
-            await page.pptrPage.mouse.up();
-        });
+        const popupPage = await runAndCapturePopup(
+            page.pptrPage,
+            async () => {
+                await page.waitForEventsAfterAction(async () => {
+                    await page.pptrPage.mouse.down();
+                    await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
+                    await page.pptrPage.mouse.up();
+                });
+            },
+        );
+
+        if (popupPage) {
+            const selectedPage = await context.selectPptrPage(popupPage);
+            await injectSymbolicCursor(selectedPage.pptrPage);
+            response.appendResponseLine('Selected newly opened page.');
+        }
 
         await removeSymbolicCursor(page.pptrPage);
 
