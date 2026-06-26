@@ -80,6 +80,7 @@ rockstar list_workflows --website_url "https://app.example.com"             # Fi
 
 ```bash
 rockstar add_workflow_step 1 click --uid "1_5"                               # Add a click step
+rockstar add_workflow_step 1 choice_click --choices '{"basic":"1_5","pro":"1_6"}' --action_value "{{plan}}"  # Add a runtime-selected click step
 rockstar add_workflow_step 1 type --uid "1_6" --action_value "{{username}}"   # Add a type step with variable
 rockstar add_workflow_step 1 wait --action_value "2000"                       # Add a wait step (2000ms)
 rockstar add_workflow_step 1 nav --action_value "https://example.com"         # Add a navigation step
@@ -92,7 +93,7 @@ rockstar add_workflow_step 1 click --uid "1_5" --step_order 3               # Up
 rockstar add_workflow_step 1 type --uid "1_6" --action_value "text" --step_description "Enter username"  # Add with description
 ```
 
-Supported actions: `click`, `type`, `wait`, `scroll`, `nav`, `hover`, `extract`, `screenshot`, `upload_image`
+Supported actions: `click`, `choice_click`, `type`, `wait`, `scroll`, `nav`, `hover`, `extract`, `screenshot`, `upload_image`
 
 ### Running & Simulating Workflows
 
@@ -106,6 +107,7 @@ rockstar simulate_workflow 1 --step_order 2                                  # S
 ```
 
 Template variables use `{{variable_name}}` syntax in `action_value` fields and are resolved at runtime via the `--variables` flag.
+For `choice_click`, store multiple targets with `--choices` and set `--action_value` to either a literal choice key or a template such as `{{plan}}`; then run with `--variables '{"plan":"pro"}'`.
 
 ## Navigation
 
