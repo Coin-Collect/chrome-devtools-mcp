@@ -12,7 +12,7 @@ import { checkNavigationSecurity } from '../utils/security.js';
 
 import { ToolCategory } from './categories.js';
 import { definePageTool, defineTool } from './ToolDefinition.js';
-import type { ContextPage } from './ToolDefinition.js';
+import type { Context, ContextPage, Response } from './ToolDefinition.js';
 import type { SelectorStrategy } from './workflowSelectors.js';
 import {
     pickBestFrameSelector,
@@ -159,6 +159,18 @@ interface SelectorsData {
         description: string;
     };
     frame_selectors?: string[];
+}
+
+interface ChoiceSelectorsData {
+    choices: Record<string, SelectorsData>;
+}
+
+function isChoiceSelectorsData(selectors: WorkflowStep['selectors']): selectors is ChoiceSelectorsData {
+    return Boolean(selectors && 'choices' in selectors);
+}
+
+function isSelectorsData(selectors: WorkflowStep['selectors']): selectors is SelectorsData {
+    return Boolean(selectors && !isChoiceSelectorsData(selectors) && selectors.strategies);
 }
 
 function makeAxSelectorValue(role: string, name: string): string {
@@ -422,6 +434,95 @@ async function injectSimulationStyles(frame: Page | Frame): Promise<void> {
     });
 }
 
+async function buildSelectorsDataForUid(
+    page: ContextPage,
+    uid: string,
+): Promise<SelectorsData> {
+    const handle = await page.getElementByUid(uid);
+    try {
+        const node = page.getAXNodeByUid(uid);
+
+        if (!node) {
+            throw new Error(`No accessibility node found for uid ${uid}`);
+        }
+
+        // Extract AX node metadata from SerializedAXNode properties
+        const nodeAsRecord = node as unknown as Record<string, unknown>;
+        const ax_node_meta = {
+            role: String(nodeAsRecord['role'] || ''),
+            name: String(nodeAsRecord['name'] || ''),
+            description: String(nodeAsRecord['description'] || ''),
+        };
+
+        // Detect if the element is inside shadow DOM (e.g. spinbutton inside <input type="date">)
+        // If so, promote to the shadow host element since shadow DOM internals are unreachable by CSS/XPath
+        const isInShadowDOM = await handle.evaluate((el: Element) => {
+            const root = el.getRootNode();
+            return root instanceof ShadowRoot;
+        });
+
+        let selectorHandle = handle;
+        if (isInShadowDOM) {
+            const hostHandle = await handle.evaluateHandle((el: Element) => {
+                const root = el.getRootNode();
+                if (root instanceof ShadowRoot) {
+                    return root.host;
+                }
+                return el;
+            });
+            // Use the host element for selector generation
+            const hostElement = hostHandle.asElement();
+            if (hostElement) {
+                selectorHandle = hostElement as unknown as typeof handle;
+                ax_node_meta.description = `Shadow DOM promoted: original role was ${ax_node_meta.role}, targeting host element`;
+            }
+        }
+
+        const elementFrame = selectorHandle.frame;
+        const uniqueStrategies = addAxSelectorStrategies(
+            await generateSelectorsForElement(selectorHandle),
+            ax_node_meta,
+        );
+
+        // Generate frame selectors pathway if element is inside an iframe
+        const frameSelectors: string[] = [];
+        const mainFrame = page.pptrPage.mainFrame();
+        let currentFrame = elementFrame;
+        const framePath: Frame[] = [];
+
+        while (currentFrame && currentFrame !== mainFrame) {
+            framePath.unshift(currentFrame);
+            const parent = currentFrame.parentFrame();
+            if (!parent) {
+                break;
+            }
+            currentFrame = parent;
+        }
+
+        for (const frame of framePath) {
+            const frameElementHandle = await frame.frameElement();
+            if (frameElementHandle) {
+                const iframeStrategies = await generateSelectorsForElement(frameElementHandle);
+                const bestIframeSelector = pickBestFrameSelector(iframeStrategies);
+                if (bestIframeSelector) {
+                    frameSelectors.push(bestIframeSelector);
+                }
+            }
+        }
+
+        const best_selector = uniqueStrategies.length > 0 ? uniqueStrategies[0].value : '';
+
+        return {
+            best_selector,
+            strategies: uniqueStrategies,
+            ax_node_meta,
+            frame_selectors: frameSelectors.length > 0 ? frameSelectors : undefined,
+        };
+    } finally {
+        void handle.dispose();
+    }
+}
+
 export const addWorkflowStep = definePageTool({
     name: 'add_workflow_step',
     description: 'Adds or updates a step in a workflow. If step_order exists, updates it. If not provided, appends as next step.',
@@ -431,106 +532,40 @@ export const addWorkflowStep = definePageTool({
     },
     schema: {
         workflow_id: zod.number().describe('The ID of the workflow to add the step to'),
-        action: zod.enum(['click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image']).describe('The action type for this step'),
+        action: zod.enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image']).describe('The action type for this step'),
         uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll actions.'),
-        action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image)'),
+        choices: zod.record(zod.string(), zod.string()).optional().describe('For choice_click actions, a map of choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.'),
+        action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image, or choice key/template for choice_click)'),
         step_description: zod.string().optional().describe('A description of what this step does'),
         step_order: zod.number().optional().describe('The order of this step. If not provided, will be set to last + 1. If exists, will update.'),
     },
     handler: async (request, response) => {
-        const { workflow_id, action, uid, action_value, step_description, step_order } = request.params;
+        const { workflow_id, action, uid, choices, action_value, step_description, step_order } = request.params;
 
         // Actions that require an element
         const elementRequiredActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
         const requiresElement = elementRequiredActions.includes(action);
 
-        let selectorsData: SelectorsData | null = null;
+        let selectorsData: SelectorsData | ChoiceSelectorsData | null = null;
 
-        if (uid) {
-            // Get element handle and AX node from snapshot
-            const handle = await request.page.getElementByUid(uid);
-            const node = request.page.getAXNodeByUid(uid);
-
-            if (!node) {
-                throw new Error(`No accessibility node found for uid ${uid}`);
+        if (action === 'choice_click') {
+            if (!choices || Object.keys(choices).length === 0) {
+                throw new Error('Action "choice_click" requires a choices parameter mapping choice keys to element uids.');
+            }
+            if (!action_value) {
+                throw new Error('Action "choice_click" requires action_value to specify the choice key or a variable template like {{choice}}.');
             }
 
-            // Extract AX node metadata from SerializedAXNode properties
-            const nodeAsRecord = node as unknown as Record<string, unknown>;
-            const ax_node_meta = {
-                role: String(nodeAsRecord['role'] || ''),
-                name: String(nodeAsRecord['name'] || ''),
-                description: String(nodeAsRecord['description'] || ''),
-            };
-
-            // Detect if the element is inside shadow DOM (e.g. spinbutton inside <input type="date">)
-            // If so, promote to the shadow host element since shadow DOM internals are unreachable by CSS/XPath
-            const isInShadowDOM = await handle.evaluate((el: Element) => {
-                const root = el.getRootNode();
-                return root instanceof ShadowRoot;
-            });
-
-            let selectorHandle = handle;
-            if (isInShadowDOM) {
-                const hostHandle = await handle.evaluateHandle((el: Element) => {
-                    const root = el.getRootNode();
-                    if (root instanceof ShadowRoot) {
-                        return root.host;
-                    }
-                    return el;
-                });
-                // Use the host element for selector generation
-                const hostElement = hostHandle.asElement();
-                if (hostElement) {
-                    selectorHandle = hostElement as unknown as typeof handle;
-                    ax_node_meta.description = `Shadow DOM promoted: original role was ${ax_node_meta.role}, targeting host element`;
+            const choiceSelectors: Record<string, SelectorsData> = {};
+            for (const [choiceKey, choiceUid] of Object.entries(choices)) {
+                if (!choiceKey.trim()) {
+                    throw new Error('Action "choice_click" received an empty choice key.');
                 }
+                choiceSelectors[choiceKey] = await buildSelectorsDataForUid(request.page, choiceUid);
             }
-
-            const elementFrame = selectorHandle.frame;
-            const uniqueStrategies = addAxSelectorStrategies(
-                await generateSelectorsForElement(selectorHandle),
-                ax_node_meta,
-            );
-
-            // Generate frame selectors pathway if element is inside an iframe
-            const frameSelectors: string[] = [];
-            const mainFrame = request.page.pptrPage.mainFrame();
-            let currentFrame = elementFrame;
-            const framePath: Frame[] = [];
-
-            while (currentFrame && currentFrame !== mainFrame) {
-                framePath.unshift(currentFrame);
-                const parent = currentFrame.parentFrame();
-                if (!parent) {
-                    break;
-                }
-                currentFrame = parent;
-            }
-
-            let parentFrame = mainFrame;
-            for (const frame of framePath) {
-                const frameElementHandle = await frame.frameElement();
-                if (frameElementHandle) {
-                    const iframeStrategies = await generateSelectorsForElement(frameElementHandle);
-                    const bestIframeSelector = pickBestFrameSelector(iframeStrategies);
-                    if (bestIframeSelector) {
-                        frameSelectors.push(bestIframeSelector);
-                    }
-                }
-                parentFrame = frame;
-            }
-
-            const best_selector = uniqueStrategies.length > 0 ? uniqueStrategies[0].value : '';
-
-            selectorsData = {
-                best_selector,
-                strategies: uniqueStrategies,
-                ax_node_meta,
-                frame_selectors: frameSelectors.length > 0 ? frameSelectors : undefined,
-            };
-
-            void handle.dispose();
+            selectorsData = { choices: choiceSelectors };
+        } else if (uid) {
+            selectorsData = await buildSelectorsDataForUid(request.page, uid);
         } else if (requiresElement) {
             throw new Error(`Action "${action}" requires a uid parameter to identify the target element.`);
         }
@@ -602,7 +637,10 @@ export const addWorkflowStep = definePageTool({
         }
 
         response.appendResponseLine(`Action: ${result.action}`);
-        if (selectorsData) {
+        if (isChoiceSelectorsData(selectorsData)) {
+            response.appendResponseLine(`Choice count: ${Object.keys(selectorsData.choices).length}`);
+            response.appendResponseLine(`Choices: ${Object.keys(selectorsData.choices).join(', ')}`);
+        } else if (selectorsData) {
             response.appendResponseLine(`Best selector: ${selectorsData.best_selector}`);
             response.appendResponseLine(`Selector strategies count: ${selectorsData.strategies.length}`);
         } else {
@@ -972,7 +1010,7 @@ interface WorkflowStep {
     action: string;
     action_value: string | null;
     description: string | null;
-    selectors: SelectorsData | null;
+    selectors: SelectorsData | ChoiceSelectorsData | null;
 }
 
 async function findElementByStrategies(
@@ -1421,6 +1459,72 @@ async function runAndCapturePopup(
     }
 }
 
+async function clickBySelectorsLikeHuman(
+    page: ContextPage,
+    selectors: SelectorsData,
+    response: Response,
+    context: Context,
+): Promise<{ page: ContextPage; usedStrategy: SelectorStrategy }> {
+    if (!selectors.strategies) {
+        throw new Error('No selectors available for click action');
+    }
+
+    const result = await findElementBySelectors(
+        page.pptrPage,
+        selectors,
+    );
+
+    if (!result) {
+        throw new Error('Element not found with any selector strategy');
+    }
+
+    response.appendResponseLine(`  Using selector: ${result.usedStrategy.type} = "${result.usedStrategy.value}"`);
+
+    const elementHandle = result.element;
+
+    // Scroll element into view naturally before interaction
+    await scrollElementIntoView(page.pptrPage.mouse, page.pptrPage, elementHandle);
+
+    // Natural mouse movement to element, then click
+    const center = await getElementClickPoint(elementHandle);
+    if (!center) {
+        throw new Error('Could not determine element position for click');
+    }
+
+    const popupPage = await runAndCapturePopup(
+        page.pptrPage,
+        async () => {
+            await page.waitForEventsAfterAction(async () => {
+                // Move mouse naturally along a Bezier curve
+                await moveMouseNaturally(
+                    page.pptrPage.mouse,
+                    lastMouseX, lastMouseY,
+                    center.x, center.y,
+                );
+                lastMouseX = center.x;
+                lastMouseY = center.y;
+
+                // Hover dwell: user reads/confirms before clicking (100-300ms)
+                await sleep(humanDelay(180, 0.4));
+
+                // Natural mousedown → hold → mouseup
+                await page.pptrPage.mouse.down();
+                await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25)))); // Hold 50-150ms
+                await page.pptrPage.mouse.up();
+            });
+        },
+    );
+
+    if (popupPage) {
+        const selectedPage = await context.selectPptrPage(popupPage);
+        await injectSymbolicCursor(selectedPage.pptrPage);
+        response.appendResponseLine('  Selected newly opened page.');
+        return { page: selectedPage, usedStrategy: result.usedStrategy };
+    }
+
+    return { page, usedStrategy: result.usedStrategy };
+}
+
 export const runWorkflow = definePageTool({
     name: 'run_workflow',
     description: 'Runs a workflow or a specific step. Executes actions with human-like timing and robust selector fallbacks. Use {{variable_name}} in action_value and pass runtime values via the variables parameter.',
@@ -1519,63 +1623,53 @@ export const runWorkflow = definePageTool({
             try {
                 switch (step.action) {
                     case 'click': {
-                        if (!step.selectors?.strategies) {
+                        if (!step.selectors || isChoiceSelectorsData(step.selectors)) {
                             throw new Error('No selectors available for click action');
                         }
 
-                        const result = await findElementBySelectors(
-                            page.pptrPage,
+                        const clickResult = await clickBySelectorsLikeHuman(
+                            page,
                             step.selectors,
+                            response,
+                            context,
                         );
+                        page = clickResult.page;
 
-                        if (!result) {
-                            throw new Error('Element not found with any selector strategy');
+                        executionResults.push({ step: step.step_order, action: 'click', success: true, details: `Clicked using ${clickResult.usedStrategy.type}` });
+                        break;
+                    }
+
+                    case 'choice_click': {
+                        if (!actionValue) {
+                            throw new Error('No choice value provided for choice_click action');
+                        }
+                        if (!isChoiceSelectorsData(step.selectors)) {
+                            throw new Error('No choice selectors available for choice_click action');
                         }
 
-                        response.appendResponseLine(`  Using selector: ${result.usedStrategy.type} = "${result.usedStrategy.value}"`);
-
-                        const elementHandle = result.element;
-
-                        // Scroll element into view naturally before interaction
-                        await scrollElementIntoView(page.pptrPage.mouse, page.pptrPage, elementHandle);
-
-                        // Natural mouse movement to element, then click
-                        const center = await getElementClickPoint(elementHandle);
-                        if (!center) {
-                            throw new Error('Could not determine element position for click');
-                        }
-
-                        const popupPage = await runAndCapturePopup(
-                            page.pptrPage,
-                            async () => {
-                                await page.waitForEventsAfterAction(async () => {
-                                    // Move mouse naturally along a Bezier curve
-                                    await moveMouseNaturally(
-                                        page.pptrPage.mouse,
-                                        lastMouseX, lastMouseY,
-                                        center.x, center.y,
-                                    );
-                                    lastMouseX = center.x;
-                                    lastMouseY = center.y;
-
-                                    // Hover dwell: user reads/confirms before clicking (100-300ms)
-                                    await sleep(humanDelay(180, 0.4));
-
-                                    // Natural mousedown → hold → mouseup
-                                    await page.pptrPage.mouse.down();
-                                    await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25)))); // Hold 50-150ms
-                                    await page.pptrPage.mouse.up();
-                                });
-                            },
+                        const choiceKey = actionValue.trim();
+                        const exactChoice = step.selectors.choices[choiceKey];
+                        const normalizedChoiceKey = Object.keys(step.selectors.choices).find(key =>
+                            key.toLowerCase() === choiceKey.toLowerCase(),
                         );
+                        const choiceSelectors = exactChoice || (normalizedChoiceKey ? step.selectors.choices[normalizedChoiceKey] : undefined);
 
-                        if (popupPage) {
-                            page = await context.selectPptrPage(popupPage);
-                            await injectSymbolicCursor(page.pptrPage);
-                            response.appendResponseLine('  Selected newly opened page.');
+                        if (!choiceSelectors) {
+                            throw new Error(`Unknown choice "${choiceKey}" for choice_click action. Available choices: ${Object.keys(step.selectors.choices).join(', ')}`);
                         }
 
-                        executionResults.push({ step: step.step_order, action: 'click', success: true, details: `Clicked using ${result.usedStrategy.type}` });
+                        const selectedChoiceKey = exactChoice ? choiceKey : normalizedChoiceKey!;
+                        response.appendResponseLine(`  Selected choice: ${selectedChoiceKey}`);
+
+                        const clickResult = await clickBySelectorsLikeHuman(
+                            page,
+                            choiceSelectors,
+                            response,
+                            context,
+                        );
+                        page = clickResult.page;
+
+                        executionResults.push({ step: step.step_order, action: 'choice_click', success: true, details: `Clicked choice "${selectedChoiceKey}" using ${clickResult.usedStrategy.type}` });
                         break;
                     }
 
@@ -1584,7 +1678,7 @@ export const runWorkflow = definePageTool({
                             throw new Error('No text value provided for type action');
                         }
 
-                        if (step.selectors?.strategies) {
+                        if (isSelectorsData(step.selectors)) {
                             const result = await findElementBySelectors(
                                 page.pptrPage,
                                 step.selectors,
@@ -1717,7 +1811,7 @@ export const runWorkflow = definePageTool({
                     }
 
                     case 'hover': {
-                        if (!step.selectors?.strategies) {
+                        if (!isSelectorsData(step.selectors)) {
                             throw new Error('No selectors available for hover action');
                         }
 
@@ -1759,7 +1853,7 @@ export const runWorkflow = definePageTool({
                     }
 
                     case 'extract': {
-                        if (!step.selectors?.strategies) {
+                        if (!isSelectorsData(step.selectors)) {
                             throw new Error('No selectors available for extract action');
                         }
 
@@ -1791,7 +1885,7 @@ export const runWorkflow = definePageTool({
                     }
 
                     case 'upload_image': {
-                        if (!step.selectors?.strategies) {
+                        if (!isSelectorsData(step.selectors)) {
                             throw new Error('No selectors available for upload_image action');
                         }
                         if (!actionValue) {
@@ -1983,7 +2077,7 @@ export const simulateWorkflow = definePageTool({
             try {
                 const elementActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
 
-                if (elementActions.includes(step.action) && step.selectors?.strategies) {
+                if (elementActions.includes(step.action) && isSelectorsData(step.selectors)) {
                     // Find the target element
                     const result = await findElementBySelectors(
                         page,
