@@ -621,7 +621,7 @@ async function buildSelectorsDataForUid(
 
 export const addWorkflowStep = definePageTool({
     name: 'add_workflow_step',
-    description: 'Adds or updates a step in a workflow. If step_order exists, updates it. If not provided, appends as next step.',
+    description: 'Adds, inserts, or updates a workflow step. Use insert_at to insert a new step and shift later steps forward.',
     annotations: {
         category: ToolCategory.INPUT,
         readOnlyHint: false,
@@ -634,9 +634,14 @@ export const addWorkflowStep = definePageTool({
         action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image, or choice key/template for choice_click)'),
         step_description: zod.string().optional().describe('A description of what this step does'),
         step_order: zod.number().optional().describe('The order of this step. If not provided, will be set to last + 1. If exists, will update.'),
+        insert_at: zod.number().int().positive().optional().describe('Insert a new step at this order and shift this and all later steps forward. Cannot be used with step_order.'),
     },
     handler: async (request, response) => {
-        const { workflow_id, action, uid, choices, action_value, step_description, step_order } = request.params;
+        const { workflow_id, action, uid, choices, action_value, step_description, step_order, insert_at } = request.params;
+
+        if (step_order !== undefined && insert_at !== undefined) {
+            throw new Error('step_order and insert_at cannot be used together. Use step_order to update and insert_at to insert.');
+        }
 
         // Actions that require an element
         const elementRequiredActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
@@ -666,8 +671,8 @@ export const addWorkflowStep = definePageTool({
             throw new Error(`Action "${action}" requires a uid parameter to identify the target element.`);
         }
 
-        // Determine step_order
-        let finalStepOrder = step_order;
+        // Determine step_order. insert_at always creates a new row instead of updating.
+        let finalStepOrder = insert_at ?? step_order;
 
         if (finalStepOrder === undefined) {
             // Get the max step_order for this workflow
@@ -682,13 +687,47 @@ export const addWorkflowStep = definePageTool({
             finalStepOrder = maxStepData ? maxStepData.step_order + 1 : 1;
         }
 
-        // Check if step_order already exists (upsert logic)
-        const { data: existingStep } = await supabase
-            .from('workflow_steps')
-            .select('id')
-            .eq('workflow_id', workflow_id)
-            .eq('step_order', finalStepOrder)
-            .single();
+        const shiftedSteps: Array<{ id: number; step_order: number }> = [];
+        if (insert_at !== undefined) {
+            const { data: stepsToShift, error: stepsToShiftError } = await supabase
+                .from('workflow_steps')
+                .select('id, step_order')
+                .eq('workflow_id', workflow_id)
+                .gte('step_order', insert_at)
+                .order('step_order', { ascending: false });
+
+            if (stepsToShiftError) {
+                throw new Error(`Failed to prepare workflow step insertion: ${stepsToShiftError.message}`);
+            }
+
+            for (const step of stepsToShift ?? []) {
+                const { error } = await supabase
+                    .from('workflow_steps')
+                    .update({ step_order: step.step_order + 1 })
+                    .eq('id', step.id);
+
+                if (error) {
+                    for (const shiftedStep of [...shiftedSteps].reverse()) {
+                        await supabase
+                            .from('workflow_steps')
+                            .update({ step_order: shiftedStep.step_order })
+                            .eq('id', shiftedStep.id);
+                    }
+                    throw new Error(`Failed to shift workflow steps for insertion: ${error.message}`);
+                }
+                shiftedSteps.push(step);
+            }
+        }
+
+        // Check if step_order already exists (upsert logic). insert_at has already made room.
+        const { data: existingStep } = insert_at === undefined
+            ? await supabase
+                .from('workflow_steps')
+                .select('id')
+                .eq('workflow_id', workflow_id)
+                .eq('step_order', finalStepOrder)
+                .single()
+            : { data: null };
 
         let result;
         if (existingStep) {
@@ -726,10 +765,20 @@ export const addWorkflowStep = definePageTool({
                 .single();
 
             if (error) {
+                for (const shiftedStep of [...shiftedSteps].reverse()) {
+                    await supabase
+                        .from('workflow_steps')
+                        .update({ step_order: shiftedStep.step_order })
+                        .eq('id', shiftedStep.id);
+                }
                 throw new Error(`Failed to add workflow step: ${error.message}`);
             }
             result = data;
-            response.appendResponseLine(`Successfully added step ${finalStepOrder} to workflow ${workflow_id}`);
+            response.appendResponseLine(
+                insert_at === undefined
+                    ? `Successfully added step ${finalStepOrder} to workflow ${workflow_id}`
+                    : `Successfully inserted step ${finalStepOrder} into workflow ${workflow_id}`,
+            );
         }
 
         response.appendResponseLine(`Action: ${result.action}`);
