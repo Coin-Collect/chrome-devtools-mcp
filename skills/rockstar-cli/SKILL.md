@@ -73,6 +73,8 @@ rockstar create_workflow "Login Flow"                                        # C
 rockstar create_workflow "Login Flow" --website_url "https://app.example.com" --description "Automates login"  # Create with metadata
 rockstar update_workflow 1 --title "Login Flow v2"                           # Update workflow metadata
 rockstar update_workflow 1 --website_url "https://app.example.com" --status "draft"  # Update selected fields
+rockstar duplicate_workflow 1                                                # Duplicate a workflow with all of its steps
+rockstar duplicate_workflow 1 --title "Login Flow Copy"                      # Duplicate with a custom title
 rockstar delete_workflow 1                                                  # Delete a workflow and its steps
 rockstar list_workflows                                                      # List workflows without steps
 rockstar list_workflows --show_steps                                          # List workflows with steps
