@@ -162,6 +162,55 @@ export const commands: Commands = {
       },
     },
   },
+  update_workflow_step: {
+    description: 'Updates a single workflow step by workflow ID and step order. Only provided fields are changed.',
+    category: 'Input automation',
+    args: {
+      workflow_id: {
+        name: 'workflow_id',
+        type: 'number',
+        description: 'The ID of the workflow that contains the step',
+        required: true,
+      },
+      step_order: {
+        name: 'step_order',
+        type: 'number',
+        description: 'The step order of the step to update',
+        required: true,
+      },
+      action: {
+        name: 'action',
+        type: 'string',
+        description: 'The new action type for this step',
+        required: false,
+        enum: ['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image'],
+      },
+      uid: {
+        name: 'uid',
+        type: 'string',
+        description: 'The uid of an element on the page from the page content snapshot. Required when updating to an element-based action or when refreshing selectors.',
+        required: false,
+      },
+      choices: {
+        name: 'choices',
+        type: 'string',
+        description: 'For choice_click actions, a JSON object mapping choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.',
+        required: false,
+      },
+      action_value: {
+        name: 'action_value',
+        type: 'string',
+        description: 'The new value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image, or choice key/template for choice_click)',
+        required: false,
+      },
+      step_description: {
+        name: 'step_description',
+        type: 'string',
+        description: 'The new description for this step',
+        required: false,
+      },
+    },
+  },
   delete_workflow: {
     description: 'Deletes a workflow by ID and removes its workflow steps first.',
     category: 'Input automation',
