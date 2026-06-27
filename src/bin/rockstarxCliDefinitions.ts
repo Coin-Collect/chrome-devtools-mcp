@@ -102,6 +102,60 @@ export const commands: Commands = {
       },
     },
   },
+  update_workflow: {
+    description: 'Updates an existing workflow by ID. Only provided fields are changed.',
+    category: 'Input automation',
+    args: {
+      workflow_id: {
+        name: 'workflow_id',
+        type: 'number',
+        description: 'The ID of the workflow to update',
+        required: true,
+      },
+      title: {
+        name: 'title',
+        type: 'string',
+        description: 'The new title of the workflow',
+        required: false,
+      },
+      website_url: {
+        name: 'website_url',
+        type: 'string',
+        description: 'The new target website URL for the workflow',
+        required: false,
+      },
+      description: {
+        name: 'description',
+        type: 'string',
+        description: 'The new description of what the workflow does',
+        required: false,
+      },
+      success_criteria: {
+        name: 'success_criteria',
+        type: 'string',
+        description: 'The new criteria to determine if the workflow succeeded',
+        required: false,
+      },
+      status: {
+        name: 'status',
+        type: 'string',
+        description: 'The new workflow status',
+        required: false,
+      },
+    },
+  },
+  delete_workflow: {
+    description: 'Deletes a workflow by ID and removes its workflow steps first.',
+    category: 'Input automation',
+    args: {
+      workflow_id: {
+        name: 'workflow_id',
+        type: 'number',
+        description: 'The ID of the workflow to delete',
+        required: true,
+      },
+    },
+  },
   list_workflows: {
     description: 'Lists workflows from the database, optionally filtered by website URL. Steps are hidden by default and can be included on demand.',
     category: 'Input automation',
