@@ -69,6 +69,102 @@ export const createWorkflow = defineTool({
     },
 });
 
+export const updateWorkflow = defineTool({
+    name: 'update_workflow',
+    description: 'Updates an existing workflow by ID. Only provided fields are changed.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        workflow_id: zod.number().describe('The ID of the workflow to update'),
+        title: zod.string().optional().describe('The new title of the workflow'),
+        website_url: zod.string().optional().describe('The new target website URL for the workflow'),
+        description: zod.string().optional().describe('The new description of what the workflow does'),
+        success_criteria: zod.string().optional().describe('The new criteria to determine if the workflow succeeded'),
+        status: zod.string().optional().describe('The new workflow status'),
+    },
+    handler: async (request, response) => {
+        const { workflow_id, ...fields } = request.params;
+
+        const updates: Record<string, string> = {};
+        for (const [key, value] of Object.entries(fields)) {
+            if (typeof value === 'string') {
+                updates[key] = value;
+            }
+        }
+
+        if (Object.keys(updates).length === 0) {
+            throw new Error('At least one field must be provided to update the workflow.');
+        }
+
+        const { data, error } = await supabase
+            .from('workflows')
+            .update(updates)
+            .eq('id', workflow_id)
+            .select()
+            .single();
+
+        if (error) {
+            throw new Error(`Failed to update workflow: ${error.message}`);
+        }
+
+        response.appendResponseLine(`Successfully updated workflow "${data.title}" (ID: ${data.id})`);
+        response.appendResponseLine(`Updated fields: ${Object.keys(updates).join(', ')}`);
+    },
+});
+
+export const deleteWorkflow = defineTool({
+    name: 'delete_workflow',
+    description: 'Deletes a workflow by ID and removes its workflow steps first.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        workflow_id: zod.number().describe('The ID of the workflow to delete'),
+    },
+    handler: async (request, response) => {
+        const { workflow_id } = request.params;
+
+        const { data: workflow, error: workflowFetchError } = await supabase
+            .from('workflows')
+            .select('id, title')
+            .eq('id', workflow_id)
+            .single();
+
+        if (workflowFetchError) {
+            throw new Error(`Failed to fetch workflow: ${workflowFetchError.message}`);
+        }
+
+        if (!workflow) {
+            throw new Error(`Workflow ${workflow_id} not found.`);
+        }
+
+        const { data: deletedSteps, error: stepsError } = await supabase
+            .from('workflow_steps')
+            .delete()
+            .eq('workflow_id', workflow_id)
+            .select('id');
+
+        if (stepsError) {
+            throw new Error(`Failed to delete workflow steps: ${stepsError.message}`);
+        }
+
+        const { error: deleteError } = await supabase
+            .from('workflows')
+            .delete()
+            .eq('id', workflow_id);
+
+        if (deleteError) {
+            throw new Error(`Failed to delete workflow: ${deleteError.message}`);
+        }
+
+        response.appendResponseLine(`Successfully deleted workflow "${workflow.title}" (ID: ${workflow.id})`);
+        response.appendResponseLine(`Deleted ${deletedSteps?.length || 0} workflow steps.`);
+    },
+});
+
 export const listWorkflows = defineTool({
     name: 'list_workflows',
     description: 'Lists workflows from the database, optionally filtered by website URL. Steps are hidden by default and can be included on demand.',
