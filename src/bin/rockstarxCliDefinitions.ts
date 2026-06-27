@@ -144,6 +144,24 @@ export const commands: Commands = {
       },
     },
   },
+  duplicate_workflow: {
+    description: 'Duplicates an existing workflow by ID, including all of its steps.',
+    category: 'Input automation',
+    args: {
+      workflow_id: {
+        name: 'workflow_id',
+        type: 'number',
+        description: 'The ID of the workflow to duplicate',
+        required: true,
+      },
+      title: {
+        name: 'title',
+        type: 'string',
+        description: 'Optional title for the duplicated workflow. Defaults to "Copy of <original title>".',
+        required: false,
+      },
+    },
+  },
   delete_workflow: {
     description: 'Deletes a workflow by ID and removes its workflow steps first.',
     category: 'Input automation',
