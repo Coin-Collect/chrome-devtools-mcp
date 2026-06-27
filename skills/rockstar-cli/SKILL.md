@@ -79,6 +79,8 @@ rockstar delete_workflow 1                                                  # De
 rockstar list_workflows                                                      # List workflows without steps
 rockstar list_workflows --show_steps                                          # List workflows with steps
 rockstar list_workflows --website_url "https://app.example.com"             # Filter by website URL
+rockstar update_workflow_step 1 3 --step_description "Click the primary CTA" # Update a single step
+rockstar update_workflow_step 1 3 --action_value "{{plan}}"                 # Update one field on a step
 ```
 
 ### Adding Steps to a Workflow
