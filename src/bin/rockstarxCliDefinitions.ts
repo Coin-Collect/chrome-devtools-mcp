@@ -175,7 +175,7 @@ export const commands: Commands = {
     },
   },
   add_workflow_step: {
-    description: 'Adds or updates a step in a workflow. If step_order exists, updates it. If not provided, appends as next step.',
+    description: 'Adds, inserts, or updates a workflow step. Use insert_at to insert a new step and shift later steps forward.',
     category: 'Input automation',
     args: {
       workflow_id: {
@@ -219,6 +219,12 @@ export const commands: Commands = {
         name: 'step_order',
         type: 'number',
         description: 'The order of this step. If not provided, will be set to last + 1. If exists, will update.',
+        required: false,
+      },
+      insert_at: {
+        name: 'insert_at',
+        type: 'number',
+        description: 'Insert a new step at this order and shift this and all later steps forward. Cannot be used with step_order.',
         required: false,
       },
     },
