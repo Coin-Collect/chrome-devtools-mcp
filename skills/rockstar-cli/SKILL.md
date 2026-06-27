@@ -93,6 +93,7 @@ rockstar add_workflow_step 1 screenshot --action_value "result.png"          # A
 rockstar add_workflow_step 1 scroll --uid "1_9" --action_value "300"         # Add a scroll step
 rockstar add_workflow_step 1 upload_image --uid "1_10" --action_value "https://example.com/img.png"  # Upload an image
 rockstar add_workflow_step 1 click --uid "1_5" --step_order 3               # Update an existing step by order
+rockstar add_workflow_step 1 click --uid "1_5" --insert_at 3                # Insert as step 3 and shift later steps forward
 rockstar add_workflow_step 1 type --uid "1_6" --action_value "text" --step_description "Enter username"  # Add with description
 ```
 
