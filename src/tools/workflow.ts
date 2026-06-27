@@ -114,6 +114,100 @@ export const updateWorkflow = defineTool({
     },
 });
 
+export const duplicateWorkflow = defineTool({
+    name: 'duplicate_workflow',
+    description: 'Duplicates an existing workflow by ID, including all of its steps.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        workflow_id: zod.number().describe('The ID of the workflow to duplicate'),
+        title: zod
+            .string()
+            .optional()
+            .describe('Optional title for the duplicated workflow. Defaults to "Copy of <original title>".'),
+    },
+    handler: async (request, response) => {
+        const { workflow_id, title } = request.params;
+
+        const { data: workflow, error: workflowError } = await supabase
+            .from('workflows')
+            .select('*')
+            .eq('id', workflow_id)
+            .single();
+
+        if (workflowError) {
+            throw new Error(`Failed to fetch workflow: ${workflowError.message}`);
+        }
+
+        if (!workflow) {
+            throw new Error(`Workflow ${workflow_id} not found.`);
+        }
+
+        const { data: steps, error: stepsError } = await supabase
+            .from('workflow_steps')
+            .select('*')
+            .eq('workflow_id', workflow_id)
+            .order('step_order', { ascending: true });
+
+        if (stepsError) {
+            throw new Error(`Failed to fetch workflow steps: ${stepsError.message}`);
+        }
+
+        const duplicatedTitle = title || `Copy of ${workflow.title}`;
+        const workflowInsert = {
+            title: duplicatedTitle,
+            website_url: workflow.website_url,
+            description: workflow.description,
+            success_criteria: workflow.success_criteria,
+            status: workflow.status,
+        };
+
+        const { data: duplicatedWorkflow, error: duplicateError } = await supabase
+            .from('workflows')
+            .insert([workflowInsert])
+            .select()
+            .single();
+
+        if (duplicateError) {
+            throw new Error(`Failed to duplicate workflow: ${duplicateError.message}`);
+        }
+
+        if (steps && steps.length > 0) {
+            const duplicatedSteps = steps.map((step: any) => ({
+                workflow_id: duplicatedWorkflow.id,
+                step_order: step.step_order,
+                action: step.action,
+                action_value: step.action_value,
+                description: step.description,
+                selectors: step.selectors,
+            }));
+
+            const { error: duplicatedStepsError } = await supabase
+                .from('workflow_steps')
+                .insert(duplicatedSteps);
+
+            if (duplicatedStepsError) {
+                await supabase
+                    .from('workflow_steps')
+                    .delete()
+                    .eq('workflow_id', duplicatedWorkflow.id);
+                await supabase
+                    .from('workflows')
+                    .delete()
+                    .eq('id', duplicatedWorkflow.id);
+                throw new Error(`Failed to duplicate workflow steps: ${duplicatedStepsError.message}`);
+            }
+        }
+
+        response.appendResponseLine(
+            `Successfully duplicated workflow "${workflow.title}" (ID: ${workflow.id}) as "${duplicatedWorkflow.title}" (ID: ${duplicatedWorkflow.id})`,
+        );
+        response.appendResponseLine(`Duplicated ${steps?.length || 0} workflow steps.`);
+    },
+});
+
 export const deleteWorkflow = defineTool({
     name: 'delete_workflow',
     description: 'Deletes a workflow by ID and removes its workflow steps first.',
