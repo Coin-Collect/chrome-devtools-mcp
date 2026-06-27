@@ -888,6 +888,117 @@ export const addWorkflowStep = definePageTool({
     },
 });
 
+export const updateWorkflowStep = definePageTool({
+    name: 'update_workflow_step',
+    description: 'Updates a single workflow step by workflow ID and step order. Only provided fields are changed.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        workflow_id: zod.number().describe('The ID of the workflow that contains the step'),
+        step_order: zod.number().describe('The step order of the step to update'),
+        action: zod.enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image']).optional().describe('The new action type for this step'),
+        uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required when updating to an element-based action or when refreshing selectors.'),
+        choices: zod.record(zod.string(), zod.string()).optional().describe('For choice_click actions, a map of choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}'),
+        action_value: zod.string().optional().describe('The new value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image, or choice key/template for choice_click)'),
+        step_description: zod.string().optional().describe('The new description for this step'),
+    },
+    handler: async (request, response) => {
+        const { workflow_id, step_order, action, uid, choices, action_value, step_description } = request.params;
+
+        const { data: existingStep, error: fetchError } = await supabase
+            .from('workflow_steps')
+            .select('*')
+            .eq('workflow_id', workflow_id)
+            .eq('step_order', step_order)
+            .single();
+
+        if (fetchError) {
+            throw new Error(`Failed to fetch workflow step: ${fetchError.message}`);
+        }
+
+        if (!existingStep) {
+            throw new Error(`Workflow step ${step_order} not found in workflow ${workflow_id}.`);
+        }
+
+        const nextAction = action ?? existingStep.action;
+        const nextActionValue = action_value !== undefined ? action_value : existingStep.action_value;
+        const nextDescription = step_description !== undefined ? step_description : existingStep.description;
+
+        const elementRequiredActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
+        const requiresElement = elementRequiredActions.includes(nextAction);
+
+        let selectorsData: SelectorsData | ChoiceSelectorsData | null;
+        if (action === 'choice_click') {
+            if (!choices || Object.keys(choices).length === 0) {
+                throw new Error('Action "choice_click" requires a choices parameter mapping choice keys to element uids.');
+            }
+            if (!nextActionValue) {
+                throw new Error('Action "choice_click" requires action_value to specify the choice key or a variable template like {{choice}}.');
+            }
+
+            const choiceSelectors: Record<string, SelectorsData> = {};
+            for (const [choiceKey, choiceUid] of Object.entries(choices)) {
+                if (!choiceKey.trim()) {
+                    throw new Error('Action "choice_click" received an empty choice key.');
+                }
+                choiceSelectors[choiceKey] = await buildSelectorsDataForUid(request.page, choiceUid);
+            }
+            selectorsData = { choices: choiceSelectors };
+        } else if (uid) {
+            selectorsData = await buildSelectorsDataForUid(request.page, uid);
+        } else if (requiresElement && !existingStep.selectors) {
+            throw new Error(`Action "${nextAction}" requires a uid parameter to identify the target element.`);
+        } else {
+            selectorsData = (existingStep.selectors ?? null) as SelectorsData | ChoiceSelectorsData | null;
+        }
+
+        if (nextAction === 'choice_click' && !isChoiceSelectorsData(selectorsData)) {
+            throw new Error('Action "choice_click" requires choice selectors. Provide choices or keep existing choice selectors.');
+        }
+
+        if (requiresElement && !isSelectorsData(selectorsData)) {
+            throw new Error(`Action "${nextAction}" requires element selectors. Provide uid or keep existing selectors from an element-based step.`);
+        }
+
+        const updates: Record<string, unknown> = {
+            action: nextAction,
+            action_value: nextActionValue,
+            description: nextDescription,
+        };
+
+        if (uid || choices || action === 'choice_click' || (nextAction !== existingStep.action && selectorsData !== existingStep.selectors)) {
+            updates.selectors = selectorsData;
+        }
+
+        const { data, error } = await supabase
+            .from('workflow_steps')
+            .update(updates)
+            .eq('id', existingStep.id)
+            .select()
+            .single();
+
+        if (error) {
+            throw new Error(`Failed to update workflow step: ${error.message}`);
+        }
+
+        response.appendResponseLine(
+            `Successfully updated step ${step_order} in workflow ${workflow_id}`,
+        );
+        response.appendResponseLine(`Action: ${data.action}`);
+        if (isChoiceSelectorsData(data.selectors)) {
+            response.appendResponseLine(`Choice count: ${Object.keys(data.selectors.choices).length}`);
+            response.appendResponseLine(`Choices: ${Object.keys(data.selectors.choices).join(', ')}`);
+        } else if (isSelectorsData(data.selectors)) {
+            response.appendResponseLine(`Best selector: ${data.selectors.best_selector}`);
+            response.appendResponseLine(`Selector strategies count: ${data.selectors.strategies.length}`);
+        } else {
+            response.appendResponseLine('No selectors (element not required for this action)');
+        }
+    },
+});
+
 // Human-like timing utilities
 function gaussianRandom(mean: number, stdDev: number): number {
     const u1 = Math.random();
