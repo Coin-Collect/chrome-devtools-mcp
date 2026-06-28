@@ -92,14 +92,19 @@ export async function startDaemon(mcpArgs: string[] = []) {
   await waitForFile(pidFilePath);
 }
 
-const SEND_COMMAND_TIMEOUT = 60_000; // ms
+const DEFAULT_SEND_COMMAND_TIMEOUT = 60_000;
 
 /**
  * `sendCommand` opens a socket connection sends a single command and disconnects.
  */
 export async function sendCommand(
   command: DaemonMessage,
+  timeoutMs = DEFAULT_SEND_COMMAND_TIMEOUT,
 ): Promise<DaemonResponse> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new Error('Daemon response timeout must be a non-negative number');
+  }
+
   const socketPath = getSocketPath();
 
   const socket = net.createConnection({
@@ -107,24 +112,37 @@ export async function sendCommand(
   });
 
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      socket.destroy();
-      reject(new Error('Timeout waiting for daemon response'));
-    }, SEND_COMMAND_TIMEOUT);
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            socket.destroy();
+            reject(
+              new Error(
+                `Timeout waiting for daemon response after ${timeoutMs}ms`,
+              ),
+            );
+          }, timeoutMs)
+        : undefined;
 
     const transport = new PipeTransport(socket, socket);
     transport.onmessage = async (message: string) => {
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
       logger('onmessage', message);
       resolve(JSON.parse(message));
     };
     socket.on('error', error => {
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
       logger('Socket error:', error);
       reject(error);
     });
     socket.on('close', () => {
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
       logger('Socket closed:');
       reject(new Error('Socket closed'));
     });
