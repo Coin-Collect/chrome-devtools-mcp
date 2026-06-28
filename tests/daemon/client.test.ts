@@ -9,12 +9,20 @@ import {describe, it, afterEach, beforeEach} from 'node:test';
 
 import {
   handleResponse,
+  sendCommand,
   startDaemon,
   stopDaemon,
 } from '../../src/daemon/client.js';
 import {isDaemonRunning} from '../../src/daemon/utils.js';
 
 describe('daemon client', () => {
+  it('rejects invalid daemon response timeouts', async () => {
+    await assert.rejects(
+      sendCommand({method: 'status'}, -1),
+      /Daemon response timeout must be a non-negative number/,
+    );
+  });
+
   describe('start/stop', () => {
     beforeEach(async () => {
       await stopDaemon();
