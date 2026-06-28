@@ -26,6 +26,7 @@ import {VERSION} from '../version.js';
 
 import {cliOptions, parseArguments} from './chrome-devtools-mcp-cli-options.js';
 import {commands} from './rockstarxCliDefinitions.js';
+import {renderRockstarHelp} from './rockstarxHelp.js';
 
 await checkForUpdates(
   'Run `npm install -g chrome-devtools-mcp@latest` and `rockstar start` to update and restart the daemon.',
@@ -46,6 +47,15 @@ const defaultArgs = [
 
 const DEFAULT_RESPONSE_TIMEOUT = 60_000;
 const WORKFLOW_RESPONSE_TIMEOUT = 5 * 60_000;
+
+const rawArgs = hideBin(process.argv);
+if (
+  rawArgs.length === 0 ||
+  (rawArgs.length === 1 && ['--help', '-h'].includes(rawArgs[0]))
+) {
+  console.log(renderRockstarHelp(commands, process.stdout.columns || 100));
+  process.exit(0);
+}
 
 function parseJsonObjectArg(argName: string, value: unknown): unknown {
   if (typeof value !== 'string' || !['choices', 'variables'].includes(argName)) {
@@ -103,6 +113,7 @@ const y = yargs(hideBin(process.argv))
     `Run 'rockstar <command> --help' for help on the specific command.`,
   )
   .demandCommand()
+  .recommendCommands()
   .version(VERSION)
   .strict()
   .help(true)
