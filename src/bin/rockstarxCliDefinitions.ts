@@ -22,9 +22,8 @@ export type Commands = Record<
 >;
 export const commands: Commands = {
   take_snapshot: {
-    description:
-      'Take a text snapshot of the currently selected page based on the a11y tree. The snapshot lists page elements along with a unique\nidentifier (uid). Always use the latest snapshot. Prefer taking a snapshot over taking a screenshot. The snapshot indicates the element selected\nin the DevTools Elements panel (if any).',
-    category: 'Debugging',
+    description: 'Inspect the selected page and list element UIDs',
+    category: 'Page inspection',
     args: {
       verbose: {
         name: 'verbose',
@@ -43,8 +42,8 @@ export const commands: Commands = {
     },
   },
   click_like_human: {
-    description: 'Clicks on an element with fully realistic human behavior: scrolls into view using mouse wheel with momentum, moves the cursor along a natural Bezier curve path, hovers briefly, then performs a mousedown/mouseup with natural hold timing. A symbolic cursor is displayed during the interaction. NOTE: Unless otherwise specified, prefer this tool over the standard click tool.',
-    category: 'Input automation',
+    description: 'Click an element naturally using its snapshot UID',
+    category: 'Human interaction',
     args: {
       uid: {
         name: 'uid',
@@ -55,8 +54,8 @@ export const commands: Commands = {
     },
   },
   type_like_human: {
-    description: 'Types text into an element with fully realistic human behavior: scrolls into view, moves the cursor naturally to the element, clicks to focus with natural mousedown/mouseup, pauses briefly, then types each character using keyboard.down/up with natural hold durations, inter-key delays matching ~55 WPM, Shift key handling for uppercase, and occasional typos that are corrected with Backspace. If uid is not provided, types into the currently focused element. NOTE: Unless otherwise specified, prefer this tool over the standard type tool.',
-    category: 'Input automation',
+    description: 'Type text naturally into a UID or the focused element',
+    category: 'Human interaction',
     args: {
       uid: {
         name: 'uid',
@@ -73,8 +72,8 @@ export const commands: Commands = {
     },
   },
   create_workflow: {
-    description: 'Creates a new workflow in the database',
-    category: 'Input automation',
+    description: 'Create a reusable workflow',
+    category: 'Workflow management',
     args: {
       title: {
         name: 'title',
@@ -103,8 +102,8 @@ export const commands: Commands = {
     },
   },
   update_workflow: {
-    description: 'Updates an existing workflow by ID. Only provided fields are changed.',
-    category: 'Input automation',
+    description: 'Update selected fields of a workflow',
+    category: 'Workflow management',
     args: {
       workflow_id: {
         name: 'workflow_id',
@@ -145,8 +144,8 @@ export const commands: Commands = {
     },
   },
   duplicate_workflow: {
-    description: 'Duplicates an existing workflow by ID, including all of its steps.',
-    category: 'Input automation',
+    description: 'Duplicate a workflow and all of its steps',
+    category: 'Workflow management',
     args: {
       workflow_id: {
         name: 'workflow_id',
@@ -163,8 +162,8 @@ export const commands: Commands = {
     },
   },
   update_workflow_step: {
-    description: 'Updates a single workflow step by workflow ID and step order. Only provided fields are changed.',
-    category: 'Input automation',
+    description: 'Update selected fields of one workflow step',
+    category: 'Workflow steps',
     args: {
       workflow_id: {
         name: 'workflow_id',
@@ -212,8 +211,8 @@ export const commands: Commands = {
     },
   },
   delete_workflow_step: {
-    description: 'Deletes a workflow step by workflow ID and step order, then closes the gap in the remaining step order.',
-    category: 'Input automation',
+    description: 'Delete a step and reorder the remaining steps',
+    category: 'Workflow steps',
     args: {
       workflow_id: {
         name: 'workflow_id',
@@ -230,8 +229,8 @@ export const commands: Commands = {
     },
   },
   delete_workflow: {
-    description: 'Deletes a workflow by ID and removes its workflow steps first.',
-    category: 'Input automation',
+    description: 'Delete a workflow and all of its steps',
+    category: 'Workflow management',
     args: {
       workflow_id: {
         name: 'workflow_id',
@@ -242,8 +241,8 @@ export const commands: Commands = {
     },
   },
   list_workflows: {
-    description: 'Lists workflows from the database, optionally filtered by website URL. Steps are hidden by default and can be included on demand.',
-    category: 'Input automation',
+    description: 'List workflows, optionally filtered by website URL',
+    category: 'Workflow management',
     args: {
       website_url: {
         name: 'website_url',
@@ -260,8 +259,8 @@ export const commands: Commands = {
     },
   },
   add_workflow_step: {
-    description: 'Adds, inserts, or updates a workflow step. Use insert_at to insert a new step and shift later steps forward.',
-    category: 'Input automation',
+    description: 'Add or insert a step into a workflow',
+    category: 'Workflow steps',
     args: {
       workflow_id: {
         name: 'workflow_id',
@@ -315,8 +314,8 @@ export const commands: Commands = {
     },
   },
   run_workflow: {
-    description: 'Runs a workflow or a specific step. Executes actions with human-like timing and robust selector fallbacks. Use {{variable_name}} in action_value and pass runtime values via the variables parameter.',
-    category: 'Input automation',
+    description: 'Run a workflow or one selected step',
+    category: 'Workflow execution',
     args: {
       workflow_id: {
         name: 'workflow_id',
@@ -339,8 +338,8 @@ export const commands: Commands = {
     },
   },
   simulate_workflow: {
-    description: 'Visually simulates a workflow without executing actions. Highlights target elements, moves the mouse naturally, and shows action labels so the user can preview workflow behavior.',
-    category: 'Input automation',
+    description: 'Preview workflow actions without executing them',
+    category: 'Workflow execution',
     args: {
       workflow_id: {
         name: 'workflow_id',
@@ -363,8 +362,8 @@ export const commands: Commands = {
     },
   },
   take_screenshot: {
-    description: 'Take a screenshot of the page or element.',
-    category: 'Debugging',
+    description: 'Capture the selected page or one element',
+    category: 'Page inspection',
     args: {
       format: {
         name: 'format',
@@ -401,8 +400,8 @@ export const commands: Commands = {
     },
   },
   click_at_like_human: {
-    description: 'Clicks at the provided coordinates with fully realistic human behavior: moves the cursor along a natural Bezier curve path from its current position to the target coordinates, hovers briefly, then performs a mousedown/mouseup with natural hold timing. A symbolic cursor is displayed during the interaction. NOTE: Unless otherwise specified, prefer this tool over the standard click_at tool.',
-    category: 'Input automation',
+    description: 'Click screen coordinates with natural mouse movement',
+    category: 'Human interaction',
     args: {
       x: {
         name: 'x',
@@ -419,8 +418,8 @@ export const commands: Commands = {
     },
   },
   drag_like_human: {
-    description: 'Drags an element onto another element with fully realistic human behavior: scrolls the source element into view, moves the cursor naturally to it, picks it up with a natural mousedown hold, then moves the cursor along a Bezier curve to the drop target and releases with mouseup. Includes pickup pause, natural trajectory, and drop settling. NOTE: Unless otherwise specified, prefer this tool over the standard drag tool.',
-    category: 'Input automation',
+    description: 'Drag one UID onto another with natural mouse movement',
+    category: 'Human interaction',
     args: {
       from_uid: {
         name: 'from_uid',
@@ -437,8 +436,8 @@ export const commands: Commands = {
     },
   },
   list_pages: {
-    description: 'Get a list of pages  open in the browser.',
-    category: 'Navigation automation',
+    description: 'List open browser pages and the selected page',
+    category: 'Page inspection',
     args: {},
   },
 } as const;
