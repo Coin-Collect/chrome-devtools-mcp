@@ -999,6 +999,73 @@ export const updateWorkflowStep = definePageTool({
     },
 });
 
+export const deleteWorkflowStep = defineTool({
+    name: 'delete_workflow_step',
+    description: 'Deletes a workflow step by workflow ID and step order, then closes the gap in the remaining step order.',
+    annotations: {
+        category: ToolCategory.INPUT,
+        readOnlyHint: false,
+    },
+    schema: {
+        workflow_id: zod.number().int().positive().describe('The ID of the workflow that contains the step'),
+        step_order: zod.number().int().positive().describe('The order of the step to delete'),
+    },
+    handler: async (request, response) => {
+        const { workflow_id, step_order } = request.params;
+
+        const { data: deletedStep, error: deleteError } = await supabase
+            .from('workflow_steps')
+            .delete()
+            .eq('workflow_id', workflow_id)
+            .eq('step_order', step_order)
+            .select('*')
+            .single();
+
+        if (deleteError) {
+            throw new Error(`Failed to delete workflow step: ${deleteError.message}`);
+        }
+
+        if (!deletedStep) {
+            throw new Error(`Workflow step ${step_order} not found in workflow ${workflow_id}.`);
+        }
+
+        const { data: stepsToShift, error: stepsToShiftError } = await supabase
+            .from('workflow_steps')
+            .select('id, step_order')
+            .eq('workflow_id', workflow_id)
+            .gt('step_order', step_order)
+            .order('step_order', { ascending: true });
+
+        if (stepsToShiftError) {
+            await supabase.from('workflow_steps').insert([deletedStep]);
+            throw new Error(`Failed to prepare workflow step reordering: ${stepsToShiftError.message}`);
+        }
+
+        const shiftedSteps: Array<{ id: number; step_order: number }> = [];
+        for (const step of stepsToShift ?? []) {
+            const { error } = await supabase
+                .from('workflow_steps')
+                .update({ step_order: step.step_order - 1 })
+                .eq('id', step.id);
+
+            if (error) {
+                for (const shiftedStep of [...shiftedSteps].reverse()) {
+                    await supabase
+                        .from('workflow_steps')
+                        .update({ step_order: shiftedStep.step_order })
+                        .eq('id', shiftedStep.id);
+                }
+                await supabase.from('workflow_steps').insert([deletedStep]);
+                throw new Error(`Failed to reorder workflow steps after deletion: ${error.message}`);
+            }
+            shiftedSteps.push(step);
+        }
+
+        response.appendResponseLine(`Successfully deleted step ${step_order} from workflow ${workflow_id}`);
+        response.appendResponseLine(`Reordered ${shiftedSteps.length} subsequent workflow steps.`);
+    },
+});
+
 // Human-like timing utilities
 function gaussianRandom(mean: number, stdDev: number): number {
     const u1 = Math.random();
