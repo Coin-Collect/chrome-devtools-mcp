@@ -24,8 +24,8 @@ import {hideBin, yargs, type CallToolResult} from '../third_party/index.js';
 import {checkForUpdates} from '../utils/check-for-updates.js';
 import {VERSION} from '../version.js';
 
-import {commands} from './rockstarxCliDefinitions.js';
 import {cliOptions, parseArguments} from './chrome-devtools-mcp-cli-options.js';
+import {commands} from './rockstarxCliDefinitions.js';
 
 await checkForUpdates(
   'Run `npm install -g chrome-devtools-mcp@latest` and `rockstar start` to update and restart the daemon.',
@@ -43,6 +43,9 @@ const defaultArgs = [
   '--no-performance-crux',
   '--no-usage-statistics',
 ];
+
+const DEFAULT_RESPONSE_TIMEOUT = 60_000;
+const WORKFLOW_RESPONSE_TIMEOUT = 5 * 60_000;
 
 function parseJsonObjectArg(argName: string, value: unknown): unknown {
   if (typeof value !== 'string' || !['choices', 'variables'].includes(argName)) {
@@ -196,6 +199,14 @@ for (const [commandName, commandDef] of Object.entries(commands)) {
         choices: ['md', 'json'],
         default: 'md',
       });
+      y.option('response-timeout', {
+        type: 'number',
+        default: ['run_workflow', 'simulate_workflow'].includes(commandName)
+          ? WORKFLOW_RESPONSE_TIMEOUT
+          : DEFAULT_RESPONSE_TIMEOUT,
+        describe:
+          'Maximum time in milliseconds to wait for the daemon response. Set to 0 to disable the client-side timeout.',
+      });
       for (const [argName, opt] of Object.entries(args)) {
         const type =
           opt.type === 'integer' || opt.type === 'number'
@@ -246,11 +257,14 @@ for (const [commandName, commandDef] of Object.entries(commands)) {
           }
         }
 
-        const response = await sendCommand({
-          method: 'invoke_tool',
-          tool: commandName,
-          args: commandArgs,
-        });
+        const response = await sendCommand(
+          {
+            method: 'invoke_tool',
+            tool: commandName,
+            args: commandArgs,
+          },
+          argv['response-timeout'] as number,
+        );
 
         if (response.success) {
           console.log(
