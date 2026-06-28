@@ -183,7 +183,7 @@ export const commands: Commands = {
         type: 'string',
         description: 'The new action type for this step',
         required: false,
-        enum: ['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image'],
+        enum: ['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow'],
       },
       uid: {
         name: 'uid',
@@ -200,7 +200,7 @@ export const commands: Commands = {
       action_value: {
         name: 'action_value',
         type: 'string',
-        description: 'The new value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image, or choice key/template for choice_click)',
+        description: 'The new value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)',
         required: false,
       },
       step_description: {
@@ -274,7 +274,7 @@ export const commands: Commands = {
         type: 'string',
         description: 'The action type for this step',
         required: true,
-        enum: ['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image'],
+        enum: ['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow'],
       },
       uid: {
         name: 'uid',
@@ -291,7 +291,7 @@ export const commands: Commands = {
       action_value: {
         name: 'action_value',
         type: 'string',
-        description: 'Value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image, or choice key/template for choice_click)',
+        description: 'Value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)',
         required: false,
       },
       step_description: {
