@@ -722,10 +722,10 @@ export const addWorkflowStep = definePageTool({
     },
     schema: {
         workflow_id: zod.number().describe('The ID of the workflow to add the step to'),
-        action: zod.enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image']).describe('The action type for this step'),
+        action: zod.enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow']).describe('The action type for this step'),
         uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll actions.'),
         choices: zod.record(zod.string(), zod.string()).optional().describe('For choice_click actions, a map of choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.'),
-        action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image, or choice key/template for choice_click)'),
+        action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)'),
         step_description: zod.string().optional().describe('A description of what this step does'),
         step_order: zod.number().optional().describe('The order of this step. If not provided, will be set to last + 1. If exists, will update.'),
         insert_at: zod.number().int().positive().optional().describe('Insert a new step at this order and shift this and all later steps forward. Cannot be used with step_order.'),
@@ -763,6 +763,10 @@ export const addWorkflowStep = definePageTool({
             selectorsData = await buildSelectorsDataForUid(request.page, uid);
         } else if (requiresElement) {
             throw new Error(`Action "${action}" requires a uid parameter to identify the target element.`);
+        }
+
+        if (action === 'run_workflow' && !action_value) {
+            throw new Error('Action "run_workflow" requires action_value to specify the target workflow ID or a variable template like {{workflow_id}}.');
         }
 
         // Determine step_order. insert_at always creates a new row instead of updating.
@@ -898,10 +902,10 @@ export const updateWorkflowStep = definePageTool({
     schema: {
         workflow_id: zod.number().describe('The ID of the workflow that contains the step'),
         step_order: zod.number().describe('The step order of the step to update'),
-        action: zod.enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image']).optional().describe('The new action type for this step'),
+        action: zod.enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow']).optional().describe('The new action type for this step'),
         uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required when updating to an element-based action or when refreshing selectors.'),
         choices: zod.record(zod.string(), zod.string()).optional().describe('For choice_click actions, a map of choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}'),
-        action_value: zod.string().optional().describe('The new value for the action (e.g., text to type, wait duration, URL for nav, URL for upload image, or choice key/template for choice_click)'),
+        action_value: zod.string().optional().describe('The new value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)'),
         step_description: zod.string().optional().describe('The new description for this step'),
     },
     handler: async (request, response) => {
@@ -956,6 +960,10 @@ export const updateWorkflowStep = definePageTool({
 
         if (nextAction === 'choice_click' && !isChoiceSelectorsData(selectorsData)) {
             throw new Error('Action "choice_click" requires choice selectors. Provide choices or keep existing choice selectors.');
+        }
+
+        if (nextAction === 'run_workflow' && !nextActionValue) {
+            throw new Error('Action "run_workflow" requires action_value to specify the target workflow ID or a variable template like {{workflow_id}}.');
         }
 
         if (requiresElement && !isSelectorsData(selectorsData)) {
@@ -2020,7 +2028,14 @@ export const runWorkflow = definePageTool({
             return;
         }
 
-        for (const step of steps as WorkflowStep[]) {
+        const executeSteps = async (
+            currentWorkflowId: number,
+            workflowSteps: WorkflowStep[],
+            workflowPath: number[],
+        ): Promise<boolean> => {
+            let allSucceeded = true;
+
+        for (const step of workflowSteps) {
             response.appendResponseLine(`\n▶ Executing step ${step.step_order}: ${step.action}`);
             if (step.description) {
                 response.appendResponseLine(`  Description: ${step.description}`);
@@ -2292,7 +2307,7 @@ export const runWorkflow = definePageTool({
                     }
 
                     case 'screenshot': {
-                        const filename = actionValue || `workflow_${workflow_id}_step_${step.step_order}.png`;
+                        const filename = actionValue || `workflow_${currentWorkflowId}_step_${step.step_order}.png`;
                         const screenshot = await page.pptrPage.screenshot({ encoding: 'binary' });
                         await context.saveFile(screenshot as Uint8Array, filename);
                         response.appendResponseLine(`  Screenshot saved: ${filename}`);
@@ -2353,12 +2368,73 @@ export const runWorkflow = definePageTool({
                         break;
                     }
 
+                    case 'run_workflow': {
+                        if (!actionValue || !/^\d+$/.test(actionValue.trim())) {
+                            throw new Error('run_workflow action_value must resolve to a positive integer workflow ID');
+                        }
+
+                        const nestedWorkflowId = Number(actionValue.trim());
+                        if (!Number.isSafeInteger(nestedWorkflowId) || nestedWorkflowId <= 0) {
+                            throw new Error('run_workflow action_value must resolve to a positive integer workflow ID');
+                        }
+
+                        if (workflowPath.includes(nestedWorkflowId)) {
+                            throw new Error(`Recursive workflow call detected: ${[...workflowPath, nestedWorkflowId].join(' -> ')}`);
+                        }
+
+                        const { data: nestedSteps, error: nestedStepsError } = await supabase
+                            .from('workflow_steps')
+                            .select('*')
+                            .eq('workflow_id', nestedWorkflowId)
+                            .order('step_order', { ascending: true });
+
+                        if (nestedStepsError) {
+                            throw new Error(`Failed to fetch nested workflow ${nestedWorkflowId}: ${nestedStepsError.message}`);
+                        }
+                        if (!nestedSteps || nestedSteps.length === 0) {
+                            throw new Error(`No steps found for nested workflow ${nestedWorkflowId}`);
+                        }
+
+                        const nestedMissingVariables: string[] = [];
+                        for (const nestedStep of nestedSteps as WorkflowStep[]) {
+                            if (!nestedStep.action_value) {
+                                continue;
+                            }
+                            VARIABLE_PATTERN.lastIndex = 0;
+                            let nestedMatch = VARIABLE_PATTERN.exec(nestedStep.action_value);
+                            while (nestedMatch) {
+                                if (vars[nestedMatch[1]] === undefined) {
+                                    nestedMissingVariables.push(nestedMatch[1]);
+                                }
+                                nestedMatch = VARIABLE_PATTERN.exec(nestedStep.action_value);
+                            }
+                        }
+                        if (nestedMissingVariables.length > 0) {
+                            const uniqueMissingVariables = [...new Set(nestedMissingVariables)];
+                            throw new Error(`Nested workflow ${nestedWorkflowId} requires missing variables: ${uniqueMissingVariables.join(', ')}`);
+                        }
+
+                        response.appendResponseLine(`  Running nested workflow ${nestedWorkflowId}`);
+                        const nestedSucceeded = await executeSteps(
+                            nestedWorkflowId,
+                            nestedSteps as WorkflowStep[],
+                            [...workflowPath, nestedWorkflowId],
+                        );
+                        if (!nestedSucceeded) {
+                            throw new Error(`Nested workflow ${nestedWorkflowId} completed with failed steps`);
+                        }
+
+                        executionResults.push({ step: step.step_order, action: 'run_workflow', success: true, details: `Ran workflow ${nestedWorkflowId}` });
+                        break;
+                    }
+
                     default:
                         throw new Error(`Unknown action type: ${step.action}`);
                 }
 
                 response.appendResponseLine(`  ✓ Step ${step.step_order} completed successfully`);
             } catch (err) {
+                allSucceeded = false;
                 const errorMessage = err instanceof Error ? err.message : String(err);
                 response.appendResponseLine(`  ✗ Step ${step.step_order} failed: ${errorMessage}`);
                 executionResults.push({ step: step.step_order, action: step.action, success: false, details: errorMessage });
@@ -2370,6 +2446,11 @@ export const runWorkflow = definePageTool({
             // Human-like pause after action
             await sleep(getPostActionDelay());
         }
+
+            return allSucceeded;
+        };
+
+        await executeSteps(workflow_id, steps as WorkflowStep[], [workflow_id]);
 
         // Remove symbolic cursor
         await removeSymbolicCursor(page.pptrPage);
@@ -2607,7 +2688,29 @@ export const simulateWorkflow = definePageTool({
 
                     await page.evaluate(() => {
                         const banner = document.getElementById('__wf_sim_banner');
-                        if (banner) banner.remove();
+                        if (banner) {
+                            banner.remove();
+                        }
+                    });
+
+                } else if (step.action === 'run_workflow') {
+                    const targetWorkflow = actionValue || '(missing workflow ID)';
+                    await page.evaluate((workflowId: string) => {
+                        const banner = document.createElement('div');
+                        banner.className = '__wf_sim_banner';
+                        banner.id = '__wf_sim_banner';
+                        banner.textContent = `RUN WORKFLOW ${workflowId}`;
+                        document.body.appendChild(banner);
+                    }, targetWorkflow);
+
+                    response.appendResponseLine(`  Would run workflow ${targetWorkflow}`);
+                    await sleep(Math.min(pauseDuration, 1500));
+
+                    await page.evaluate(() => {
+                        const banner = document.getElementById('__wf_sim_banner');
+                        if (banner) {
+                            banner.remove();
+                        }
                     });
 
                 } else if (step.action === 'screenshot') {
