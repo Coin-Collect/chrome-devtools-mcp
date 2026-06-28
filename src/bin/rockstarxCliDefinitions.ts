@@ -211,6 +211,24 @@ export const commands: Commands = {
       },
     },
   },
+  delete_workflow_step: {
+    description: 'Deletes a workflow step by workflow ID and step order, then closes the gap in the remaining step order.',
+    category: 'Input automation',
+    args: {
+      workflow_id: {
+        name: 'workflow_id',
+        type: 'number',
+        description: 'The ID of the workflow that contains the step',
+        required: true,
+      },
+      step_order: {
+        name: 'step_order',
+        type: 'number',
+        description: 'The order of the step to delete',
+        required: true,
+      },
+    },
+  },
   delete_workflow: {
     description: 'Deletes a workflow by ID and removes its workflow steps first.',
     category: 'Input automation',
