@@ -112,6 +112,7 @@ Supported actions: `click`, `choice_click`, `type`, `wait`, `scroll`, `nav`, `ho
 rockstar run_workflow 1                                                      # Run all steps of workflow 1
 rockstar run_workflow 1 --step_order 3                                       # Run only step 3
 rockstar run_workflow 1 --variables '{"username":"john","password":"secret"}' # Run with template variables
+rockstar run_workflow 1 --response-timeout 600000                            # Allow up to 10 minutes for a long workflow
 rockstar simulate_workflow 1                                                 # Preview workflow without executing
 rockstar simulate_workflow 1 --pause_ms 3000                                 # Simulate with custom pause per step
 rockstar simulate_workflow 1 --step_order 2                                  # Simulate only step 2
