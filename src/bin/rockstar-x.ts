@@ -46,7 +46,9 @@ const defaultArgs = [
 ];
 
 const DEFAULT_RESPONSE_TIMEOUT = 60_000;
-const WORKFLOW_RESPONSE_TIMEOUT = 5 * 60_000;
+// Workflow duration is user-defined through waits, steps, and nested workflows.
+const WORKFLOW_RESPONSE_TIMEOUT = 0;
+const DAEMON_RESPONSE_GRACE_PERIOD = 5_000;
 
 const rawArgs = hideBin(process.argv);
 if (
@@ -268,13 +270,20 @@ for (const [commandName, commandDef] of Object.entries(commands)) {
           }
         }
 
+        const responseTimeout = argv['response-timeout'] as number;
+        if (!Number.isFinite(responseTimeout) || responseTimeout < 0) {
+          throw new Error('Response timeout must be a non-negative number');
+        }
         const response = await sendCommand(
           {
             method: 'invoke_tool',
             tool: commandName,
             args: commandArgs,
+            timeoutMs: responseTimeout,
           },
-          argv['response-timeout'] as number,
+          responseTimeout === 0
+            ? 0
+            : responseTimeout + DAEMON_RESPONSE_GRACE_PERIOD,
         );
 
         if (response.success) {
