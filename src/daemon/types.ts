@@ -15,6 +15,7 @@ export type DaemonMessage =
       method: 'invoke_tool';
       tool: string;
       args?: Record<string, unknown>;
+      timeoutMs?: number;
     };
 
 export interface DaemonResponse {
