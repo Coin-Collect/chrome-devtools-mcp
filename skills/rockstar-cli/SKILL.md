@@ -84,6 +84,8 @@ rockstar update_workflow_step 1 3 --action_value "{{plan}}"                 # Up
 rockstar delete_workflow_step 1 3                                           # Delete step 3 and reorder later steps
 ```
 
+When `--show_steps` is enabled, `choice_click` steps also list their available choice keys.
+
 ### Adding Steps to a Workflow
 
 ```bash
@@ -119,6 +121,7 @@ rockstar simulate_workflow 1 --step_order 2                                  # S
 ```
 
 Template variables use `{{variable_name}}` syntax in `action_value` fields and are resolved at runtime via the `--variables` flag.
+The `--response-timeout` value applies to both the daemon connection and the underlying MCP tool request; use `0` to disable the practical timeout.
 For `choice_click`, store multiple targets with `--choices` and set `--action_value` to either a literal choice key or a template such as `{{plan}}`; then run with `--variables '{"plan":"pro"}'`.
 
 ## Navigation
