@@ -52,12 +52,19 @@ let mcpTransport: StdioClientTransport | null = null;
 let server: Server | null = null;
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_REQUEST_TIMEOUT_MS = 2_147_483_647;
 let idleTimeout: NodeJS.Timeout | null = null;
+let activeRequestCount = 0;
 
-function resetIdleTimeout() {
+function clearIdleTimeout() {
   if (idleTimeout) {
     clearTimeout(idleTimeout);
+    idleTimeout = null;
   }
+}
+
+function resetIdleTimeout() {
+  clearIdleTimeout();
   idleTimeout = setTimeout(() => {
     logger('Idle timeout reached. Shutting down daemon.');
     console.log('Daemon shutting down due to inactivity.');
@@ -98,18 +105,33 @@ interface McpResult {
   text?: string;
 }
 async function handleRequest(msg: DaemonMessage) {
-  resetIdleTimeout();
+  activeRequestCount++;
+  clearIdleTimeout();
   try {
     if (msg.method === 'invoke_tool') {
       if (!mcpClient) {
         throw new Error('MCP client not initialized');
       }
-      const {tool, args} = msg;
+      const {tool, args, timeoutMs} = msg;
 
-      const result = (await mcpClient.callTool({
-        name: tool,
-        arguments: args || {},
-      })) as McpResult | McpContent[];
+      if (
+        timeoutMs !== undefined &&
+        (!Number.isFinite(timeoutMs) || timeoutMs < 0)
+      ) {
+        throw new Error('MCP request timeout must be a non-negative number');
+      }
+
+      const requestTimeout =
+        timeoutMs === 0 ? MAX_REQUEST_TIMEOUT_MS : timeoutMs;
+
+      const result = (await mcpClient.callTool(
+        {
+          name: tool,
+          arguments: args || {},
+        },
+        undefined,
+        requestTimeout === undefined ? undefined : {timeout: requestTimeout},
+      )) as McpResult | McpContent[];
 
       return {
         success: true,
@@ -150,6 +172,11 @@ async function handleRequest(msg: DaemonMessage) {
       success: false,
       error: errorMessage,
     };
+  } finally {
+    activeRequestCount--;
+    if (activeRequestCount === 0 && msg.method !== 'stop') {
+      resetIdleTimeout();
+    }
   }
 }
 
@@ -207,10 +234,7 @@ async function startSocketServer() {
 async function cleanup() {
   console.log('Cleaning up daemon...');
 
-  if (idleTimeout) {
-    clearTimeout(idleTimeout);
-    idleTimeout = null;
-  }
+  clearIdleTimeout();
 
   try {
     await mcpClient?.close();
