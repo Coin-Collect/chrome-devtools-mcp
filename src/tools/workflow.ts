@@ -331,6 +331,10 @@ export const listWorkflows = defineTool({
                 const sortedSteps = workflow.workflow_steps.sort((a: any, b: any) => a.step_order - b.step_order);
                 for (const step of sortedSteps) {
                     response.appendResponseLine(`    ${step.step_order}. ${step.action}: ${step.description || ''} (${step.action_value || ''})`);
+                    if (step.action === 'choice_click' && isChoiceSelectorsData(step.selectors)) {
+                        const choiceKeys = Object.keys(step.selectors.choices);
+                        response.appendResponseLine(`      Choices: ${choiceKeys.length > 0 ? choiceKeys.join(', ') : '(none)'}`);
+                    }
                 }
             } else if (show_steps) {
                 response.appendResponseLine('  No steps defined for this workflow.');
@@ -356,7 +360,13 @@ interface ChoiceSelectorsData {
 }
 
 function isChoiceSelectorsData(selectors: WorkflowStep['selectors']): selectors is ChoiceSelectorsData {
-    return Boolean(selectors && 'choices' in selectors);
+    return Boolean(
+        selectors &&
+        typeof selectors === 'object' &&
+        'choices' in selectors &&
+        selectors.choices &&
+        typeof selectors.choices === 'object',
+    );
 }
 
 function isSelectorsData(selectors: WorkflowStep['selectors']): selectors is SelectorsData {
