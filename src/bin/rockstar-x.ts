@@ -27,6 +27,7 @@ import {VERSION} from '../version.js';
 import {cliOptions, parseArguments} from './chrome-devtools-mcp-cli-options.js';
 import {commands} from './rockstarxCliDefinitions.js';
 import {renderRockstarHelp} from './rockstarxHelp.js';
+import {copyRockstarSkillToAgents} from './rockstarxSkill.js';
 
 await checkForUpdates(
   'Run `npm install -g chrome-devtools-mcp@latest` and `rockstar start` to update and restart the daemon.',
@@ -184,6 +185,21 @@ y.command('stop', 'Stop chrome-devtools-mcp if any', async () => {
   await stopDaemon();
   process.exit(0);
 });
+
+y.command(
+  'install_rockstar_skill',
+  'Copy the rockstar-cli skill from ~/rockstarx into the current workspace',
+  y => y.strict(),
+  () => {
+    try {
+      const destination = copyRockstarSkillToAgents();
+      console.log(`Copied rockstar-cli skill to ${destination}`);
+    } catch (error) {
+      console.error('Failed to copy rockstar-cli skill:', error);
+      process.exit(1);
+    }
+  },
+).alias({copy_rockstar_skill: 'install_rockstar_skill'}).strict();
 
 for (const [commandName, commandDef] of Object.entries(commands)) {
   const args = commandDef.args;
