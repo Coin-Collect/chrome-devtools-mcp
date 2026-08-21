@@ -18,6 +18,13 @@ const SERVICE_COMMANDS: HelpCommand[] = [
   {name: 'stop', description: 'Stop the background service'},
 ];
 
+const SKILL_COMMANDS: HelpCommand[] = [
+  {
+    name: 'install_rockstar_skill',
+    description: 'Copy the rockstar-cli skill into the current workspace',
+  },
+];
+
 const CATEGORY_ORDER = [
   'Page inspection',
   'Human interaction',
@@ -165,6 +172,8 @@ export function renderRockstarHelp(
     '  rockstar run_workflow <workflow_id>',
     '',
     ...renderCommandGroup('Service', SERVICE_COMMANDS, terminalWidth),
+    '',
+    ...renderCommandGroup('Skill management', SKILL_COMMANDS, terminalWidth),
   ];
 
   for (const category of CATEGORY_ORDER) {
