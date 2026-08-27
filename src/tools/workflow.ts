@@ -334,6 +334,12 @@ export const listWorkflows = defineTool({
                     if (step.action === 'choice_click' && isChoiceSelectorsData(step.selectors)) {
                         const choiceKeys = Object.keys(step.selectors.choices);
                         response.appendResponseLine(`      Choices: ${choiceKeys.length > 0 ? choiceKeys.join(', ') : '(none)'}`);
+                        for (const choiceKey of choiceKeys) {
+                            const choiceSelectors = step.selectors.choices[choiceKey];
+                            response.appendResponseLine(`        ${choiceKey} selector: ${choiceSelectors.best_selector || '(none)'}`);
+                        }
+                    } else if (isSelectorsData(step.selectors)) {
+                        response.appendResponseLine(`      Selector: ${step.selectors.best_selector || '(none)'}`);
                     }
                 }
             } else if (show_steps) {
