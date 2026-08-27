@@ -5,31 +5,19 @@
  */
 
 import fs from 'node:fs/promises';
-import path from 'node:path';
-import os from 'node:os';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 
 export async function resolveWhitelistPath(): Promise<string> {
-    const cwdWhitelistPath = path.resolve(process.cwd(), 'whitelist.json');
-    try {
-        await fs.access(cwdWhitelistPath);
-        return cwdWhitelistPath;
-    } catch {
-        const homeWhitelistPath = path.join(os.homedir(), 'rockstarx', 'whitelist.json');
-        try {
-            await fs.access(homeWhitelistPath);
-            return homeWhitelistPath;
-        } catch {
-            return cwdWhitelistPath;
-        }
-    }
+    return path.join(os.homedir(), 'rockstarx', 'whitelist.json');
 }
 
 export async function checkNavigationSecurity(urlString: string): Promise<void> {
     let url: URL;
     try {
         url = new URL(urlString);
-    } catch (e) {
+    } catch {
         throw new Error(`Security Violation: Invalid URL format (${urlString}).`);
     }
 
@@ -55,8 +43,10 @@ export async function checkNavigationSecurity(urlString: string): Promise<void> 
     try {
         const data = await fs.readFile(whitelistPath, 'utf8');
         whitelist = JSON.parse(data);
-        if (!Array.isArray(whitelist)) whitelist = [];
-    } catch (e) {
+        if (!Array.isArray(whitelist)) {
+            whitelist = [];
+        }
+    } catch {
         whitelist = [];
     }
 
