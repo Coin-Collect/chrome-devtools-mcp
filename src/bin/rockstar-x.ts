@@ -21,6 +21,7 @@ import {
 import {isDaemonRunning, serializeArgs} from '../daemon/utils.js';
 import {logDisclaimers} from '../index.js';
 import {hideBin, yargs, type CallToolResult} from '../third_party/index.js';
+import type {Response as ToolResponse} from '../tools/ToolDefinition.js';
 import {checkForUpdates} from '../utils/check-for-updates.js';
 import {VERSION} from '../version.js';
 
@@ -50,6 +51,31 @@ const DEFAULT_RESPONSE_TIMEOUT = 60_000;
 // Workflow duration is user-defined through waits, steps, and nested workflows.
 const WORKFLOW_RESPONSE_TIMEOUT = 0;
 const DAEMON_RESPONSE_GRACE_PERIOD = 5_000;
+
+async function runListWorkflowsWithoutDaemon(
+  commandArgs: Record<string, unknown>,
+  outputFormat: 'md' | 'json',
+): Promise<void> {
+  const {listWorkflows} = await import('../tools/workflow.js');
+  const responseLines: string[] = [];
+  const response = {
+    appendResponseLine(value: string) {
+      responseLines.push(value);
+    },
+  } as ToolResponse;
+
+  await listWorkflows.handler(
+    {params: commandArgs} as Parameters<typeof listWorkflows.handler>[0],
+    response,
+    undefined as never,
+  );
+
+  if (outputFormat === 'json') {
+    console.log(JSON.stringify({message: responseLines.join('\n')}));
+  } else {
+    console.log(responseLines.join('\n'));
+  }
+}
 
 const rawArgs = hideBin(process.argv);
 if (
@@ -275,15 +301,23 @@ for (const [commandName, commandDef] of Object.entries(commands)) {
     },
     async argv => {
       try {
-        if (!isDaemonRunning()) {
-          await start([]);
-        }
-
         const commandArgs: Record<string, unknown> = {};
         for (const argName of Object.keys(args)) {
           if (argName in argv) {
             commandArgs[argName] = parseJsonObjectArg(argName, argv[argName]);
           }
+        }
+
+        if (commandName === 'list_workflows') {
+          await runListWorkflowsWithoutDaemon(
+            commandArgs,
+            argv['output-format'] as 'json' | 'md',
+          );
+          return;
+        }
+
+        if (!isDaemonRunning()) {
+          await start([]);
         }
 
         const responseTimeout = argv['response-timeout'] as number;
