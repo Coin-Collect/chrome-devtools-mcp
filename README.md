@@ -54,11 +54,6 @@ Google's collection of usage statistics for Chrome DevTools MCP is independent f
 
 Collection is disabled if `CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS` or `CI` env variables are set.
 
-## Update checks
-
-By default, the server periodically checks the npm registry for updates and logs a notification when a newer version is available.
-You can disable these update checks by setting the `CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS` environment variable.
-
 ## Requirements
 
 - [Node.js](https://nodejs.org/) v20.19 or a newer [latest maintenance LTS](https://github.com/nodejs/Release#release-schedule) version.

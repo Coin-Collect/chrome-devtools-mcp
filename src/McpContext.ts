@@ -4,9 +4,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import fs from 'node:fs/promises';
-import path from 'node:path';
-
 import type {TargetUniverse} from './DevtoolsUtils.js';
 import {UniverseManager} from './DevtoolsUtils.js';
 import {McpPage} from './McpPage.js';
@@ -48,7 +45,8 @@ import {
   ExtensionRegistry,
   type InstalledExtension,
 } from './utils/ExtensionRegistry.js';
-import {saveTemporaryFile} from './utils/files.js';
+import {saveOutputFile, saveTemporaryFile} from './utils/files.js';
+import type {SaveFileOptions} from './utils/files.js';
 import {checkNavigationSecurity} from './utils/security.js';
 import {getNetworkMultiplierFromString} from './WaitForHelper.js';
 
@@ -844,15 +842,13 @@ export class McpContext implements Context {
   async saveFile(
     data: Uint8Array<ArrayBufferLike>,
     filename: string,
+    options?: SaveFileOptions,
   ): Promise<{filename: string}> {
     try {
-      const filePath = path.resolve(filename);
-      await fs.mkdir(path.dirname(filePath), {recursive: true});
-      await fs.writeFile(filePath, data);
-      return {filename: filePath};
+      return await saveOutputFile(data, filename, options);
     } catch (err) {
       this.logger(err);
-      throw new Error('Could not save a file', {cause: err});
+      throw err;
     }
   }
 

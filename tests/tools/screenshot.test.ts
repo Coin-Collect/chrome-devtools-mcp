@@ -5,12 +5,13 @@
  */
 
 import assert from 'node:assert';
-import {rm, stat, mkdir, chmod, writeFile} from 'node:fs/promises';
+import {rm, stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {describe, it} from 'node:test';
 
 import {screenshot} from '../../src/tools/screenshot.js';
+import {getOutputDirectory} from '../../src/utils/files.js';
 import {screenshots} from '../snapshot.js';
 import {html, withMcpContext} from '../utils.js';
 
@@ -179,7 +180,11 @@ describe('screenshot', () => {
 
     it('with filePath', async () => {
       await withMcpContext(async (response, context) => {
-        const filePath = join(tmpdir(), 'test-screenshot.png');
+        const filePath = join(
+          'screenshot-tests',
+          `test-${process.pid}-${Date.now()}.png`,
+        );
+        const savedFilePath = join(getOutputDirectory(), filePath);
         try {
           const fixture = screenshots.basic;
           const page = context.getSelectedPptrPage();
@@ -200,76 +205,38 @@ describe('screenshot', () => {
           );
           assert.equal(
             response.responseLines.at(1),
-            `Saved screenshot to ${filePath}.`,
+            `Saved screenshot to ${savedFilePath}.`,
           );
 
-          const stats = await stat(filePath);
+          const stats = await stat(savedFilePath);
           assert.ok(stats.isFile());
           assert.ok(stats.size > 0);
         } finally {
-          await rm(filePath, {force: true});
+          await rm(join(getOutputDirectory(), 'screenshot-tests'), {
+            recursive: true,
+            force: true,
+          });
         }
       });
     });
 
-    it('with unwritable filePath', async () => {
-      if (process.platform === 'win32') {
-        const filePath = join(
-          tmpdir(),
-          'readonly-file-for-screenshot-test.png',
+    it('rejects a filePath outside the controlled output directory', async () => {
+      await withMcpContext(async (response, context) => {
+        const fixture = screenshots.basic;
+        const page = context.getSelectedPptrPage();
+        await page.setContent(fixture.html);
+        await assert.rejects(
+          screenshot.handler(
+            {
+              params: {format: 'png', filePath: join(tmpdir(), 'outside.png')},
+              page: context.getSelectedMcpPage(),
+            },
+            response,
+            context,
+          ),
+          /controlled output directory/,
         );
-        // Create the file and make it read-only.
-        await writeFile(filePath, '');
-        await chmod(filePath, 0o400);
-
-        try {
-          await withMcpContext(async (response, context) => {
-            const fixture = screenshots.basic;
-            const page = context.getSelectedPptrPage();
-            await page.setContent(fixture.html);
-            await assert.rejects(
-              screenshot.handler(
-                {
-                  params: {format: 'png', filePath},
-                  page: context.getSelectedMcpPage(),
-                },
-                response,
-                context,
-              ),
-            );
-          });
-        } finally {
-          // Make the file writable again so it can be deleted.
-          await chmod(filePath, 0o600);
-          await rm(filePath, {force: true});
-        }
-      } else {
-        const dir = join(tmpdir(), 'readonly-dir-for-screenshot-test');
-        await mkdir(dir, {recursive: true});
-        await chmod(dir, 0o500);
-        const filePath = join(dir, 'test-screenshot.png');
-
-        try {
-          await withMcpContext(async (response, context) => {
-            const fixture = screenshots.basic;
-            const page = context.getSelectedPptrPage();
-            await page.setContent(fixture.html);
-            await assert.rejects(
-              screenshot.handler(
-                {
-                  params: {format: 'png', filePath},
-                  page: context.getSelectedMcpPage(),
-                },
-                response,
-                context,
-              ),
-            );
-          });
-        } finally {
-          await chmod(dir, 0o700);
-          await rm(dir, {recursive: true, force: true});
-        }
-      }
+      });
     });
 
     it('with malformed filePath', async () => {

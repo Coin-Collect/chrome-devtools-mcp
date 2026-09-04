@@ -18,18 +18,18 @@ import {
   sendCommand,
   handleResponse,
 } from '../daemon/client.js';
+import {
+  createUnavailableDaemonStatus,
+  formatDaemonStatus,
+  normalizeDaemonStatus,
+} from '../daemon/status.js';
 import {isDaemonRunning, serializeArgs} from '../daemon/utils.js';
 import {logDisclaimers} from '../index.js';
 import {hideBin, yargs, type CallToolResult} from '../third_party/index.js';
-import {checkForUpdates} from '../utils/check-for-updates.js';
 import {VERSION} from '../version.js';
 
 import {commands} from './chrome-devtools-cli-options.js';
 import {cliOptions, parseArguments} from './chrome-devtools-mcp-cli-options.js';
-
-await checkForUpdates(
-  'Run `npm install -g chrome-devtools-mcp@latest` and `chrome-devtools start` to update and restart the daemon.',
-);
 
 async function start(args: string[]) {
   const combinedArgs = [...args, ...defaultArgs];
@@ -116,33 +116,50 @@ y.command(
   },
 ).strict(); // Re-enable strict validation for other commands; this is applied to the yargs instance itself
 
-y.command('status', 'Checks if chrome-devtools-mcp is running', async () => {
-  if (isDaemonRunning()) {
-    console.log('chrome-devtools-mcp daemon is running.');
-    const response = await sendCommand({
-      method: 'status',
-    });
-    if (response.success) {
-      const data = JSON.parse(response.result) as {
-        pid: number | null;
-        socketPath: string;
-        startDate: string;
-        version: string;
-        args: string[];
-      };
+y.command(
+  'status',
+  'Show daemon health, uptime, version, and configuration',
+  y =>
+    y
+      .option('output-format', {
+        choices: ['md', 'json'],
+        default: 'md',
+      })
+      .strict(),
+  async argv => {
+    const outputFormat = argv['output-format'] as 'json' | 'md';
+
+    if (!isDaemonRunning()) {
       console.log(
-        `pid=${data.pid} socket=${data.socketPath} start-date=${data.startDate} version=${data.version}`,
+        formatDaemonStatus(createUnavailableDaemonStatus(), outputFormat),
       );
-      console.log(`args=${JSON.stringify(data.args)}`);
-    } else {
-      console.error('Error:', response.error);
       process.exit(1);
     }
-  } else {
-    console.log('chrome-devtools-mcp daemon is not running.');
-  }
-  process.exit(0);
-});
+
+    try {
+      const response = await sendCommand({
+        method: 'status',
+      });
+      if (!response.success) {
+        throw new Error(String(response.error));
+      }
+
+      const status = normalizeDaemonStatus(JSON.parse(response.result));
+      console.log(formatDaemonStatus(status, outputFormat));
+      process.exit(status.healthy ? 0 : 1);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (outputFormat === 'json') {
+        console.error(
+          JSON.stringify({running: false, healthy: false, error: message}),
+        );
+      } else {
+        console.error(`Error: ${message}`);
+      }
+      process.exit(1);
+    }
+  },
+);
 
 y.command('stop', 'Stop chrome-devtools-mcp if any', async () => {
   if (!isDaemonRunning()) {

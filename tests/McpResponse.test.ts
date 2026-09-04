@@ -6,7 +6,6 @@
 
 import assert from 'node:assert';
 import {readFile, rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {describe, it} from 'node:test';
 
@@ -17,6 +16,7 @@ import type {McpContext} from '../src/McpContext.js';
 import type {McpResponse} from '../src/McpResponse.js';
 import {replaceHtmlElementsWithUids} from '../src/McpResponse.js';
 import type {JSONSchema7Definition} from '../src/third_party/index.js';
+import {getOutputDirectory} from '../src/utils/files.js';
 import {
   closePage,
   listPages,
@@ -73,6 +73,20 @@ describe('McpResponse', () => {
       t.assert.snapshot?.(
         JSON.stringify(stabilizeStructuredContent(structuredContent), null, 2),
       );
+    });
+  });
+
+  it('allows tools to attach custom structured content', async () => {
+    await withMcpContext(async (response, context) => {
+      response.setStructuredContent?.({
+        workflows: [],
+        summary: {workflow_count: 0},
+      });
+      const {structuredContent} = await response.handle('test', context);
+      assert.deepStrictEqual(structuredContent, {
+        workflows: [],
+        summary: {workflow_count: 0},
+      });
     });
   });
 
@@ -156,7 +170,11 @@ describe('McpResponse', () => {
   });
 
   it('saves snapshot to file and returns structured content', async t => {
-    const filePath = join(tmpdir(), 'test-screenshot.png');
+    const filePath = join(
+      'mcp-response-tests',
+      `snapshot-${process.pid}-${Date.now()}.txt`,
+    );
+    const savedFilePath = join(getOutputDirectory(), filePath);
     try {
       await withMcpContext(async (response, context) => {
         const page = context.getSelectedPptrPage();
@@ -181,10 +199,13 @@ describe('McpResponse', () => {
           ),
         );
       });
-      const content = await readFile(filePath, 'utf-8');
+      const content = await readFile(savedFilePath, 'utf-8');
       t.assert.snapshot?.(stabilizeResponseOutput(content));
     } finally {
-      await rm(filePath, {force: true});
+      await rm(join(getOutputDirectory(), 'mcp-response-tests'), {
+        recursive: true,
+        force: true,
+      });
     }
   });
 

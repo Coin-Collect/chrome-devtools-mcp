@@ -8,16 +8,35 @@
 import { supabase } from '../supabase.js';
 import { zod } from '../third_party/index.js';
 import type { ElementHandle, KeyInput, Page, Frame, SerializedAXNode } from '../third_party/index.js';
-import { checkNavigationSecurity } from '../utils/security.js';
+import {
+    checkNavigationSecurity,
+    downloadWhitelistedImage,
+    isSecurityViolation,
+} from '../utils/security.js';
 
 import { ToolCategory } from './categories.js';
-import { definePageTool, defineTool } from './ToolDefinition.js';
+import { definePageTool, defineTool, pageIdSchema } from './ToolDefinition.js';
 import type { Context, ContextPage, Response } from './ToolDefinition.js';
 import type { SelectorStrategy } from './workflowSelectors.js';
 import {
     pickBestFrameSelector,
     resolveFrame,
 } from './workflowSelectors.js';
+import {
+    isVariableTemplate,
+    validateWorkflowStepDefinition,
+} from './workflowValidation.js';
+import {
+    createWorkflowListPage,
+    escapeLikePattern,
+    formatWorkflowListLines,
+    isRecord,
+    normalizeWebsiteHostname,
+    normalizeWorkflowRows,
+    sortWorkflowItems,
+    summarizeWorkflowList,
+    workflowMatchesHostname,
+} from './workflowList.js';
 
 
 export const createWorkflow = defineTool({
@@ -261,7 +280,7 @@ export const deleteWorkflow = defineTool({
 
 export const listWorkflows = defineTool({
     name: 'list_workflows',
-    description: 'Lists workflows from the database, optionally filtered by website URL. Steps are hidden by default and can be included on demand.',
+    description: 'Lists workflows with optional filters, pagination, sorting, step details, and selector details. Steps are hidden by default.',
     annotations: {
         category: ToolCategory.INPUT,
         readOnlyHint: true,
@@ -275,77 +294,216 @@ export const listWorkflows = defineTool({
             .boolean()
             .optional()
             .describe('Whether to include workflow steps in the listing. Default is false.'),
+        show_selector_strategies: zod
+            .boolean()
+            .optional()
+            .describe('Whether to include every selector strategy, frame selector, and target signature. Implies show_steps.'),
+        website_url_match: zod
+            .enum(['exact', 'hostname'])
+            .optional()
+            .describe('How to match website_url. Default is exact; hostname compares normalized URL hostnames.'),
+        status: zod
+            .string()
+            .optional()
+            .describe('Optional exact workflow status filter.'),
+        title_contains: zod
+            .string()
+            .optional()
+            .describe('Optional case-insensitive substring filter for workflow titles.'),
+        action: zod
+            .enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow'])
+            .optional()
+            .describe('Optional action filter. Returns workflows containing at least one matching step.'),
+        limit: zod
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe('Maximum number of workflows to return.'),
+        offset: zod
+            .number()
+            .int()
+            .nonnegative()
+            .optional()
+            .describe('Number of workflows to skip before returning results. Default is 0.'),
+        max_steps: zod
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe('Maximum number of steps to show per workflow when step details are enabled.'),
+        sort_by: zod
+            .enum(['created_at', 'title', 'status', 'website_url', 'id'])
+            .optional()
+            .describe('Workflow field used for sorting. Default is created_at.'),
+        sort_order: zod
+            .enum(['asc', 'desc'])
+            .optional()
+            .describe('Sort direction. Default is desc.'),
     },
     handler: async (request, response) => {
-        const { website_url, show_steps = false } = request.params;
+        const {
+            website_url,
+            show_steps = false,
+            show_selector_strategies = false,
+            website_url_match = 'exact',
+            status,
+            title_contains,
+            action,
+            limit,
+            offset = 0,
+            max_steps,
+            sort_by = 'created_at',
+            sort_order = 'desc',
+        } = request.params;
 
-        let data: any[] | null = null;
-        let error: { message: string } | null = null;
-
-        if (show_steps) {
-            const result = website_url
-                ? await supabase
-                    .from('workflows')
-                    .select('*, workflow_steps (*)')
-                    .eq('website_url', website_url)
-                    .order('created_at', { ascending: false })
-                : await supabase
-                    .from('workflows')
-                    .select('*, workflow_steps (*)')
-                    .order('created_at', { ascending: false });
-            data = result.data as any[] | null;
-            error = result.error;
-        } else {
-            const result = website_url
-                ? await supabase
-                    .from('workflows')
-                    .select('*')
-                    .eq('website_url', website_url)
-                    .order('created_at', { ascending: false })
-                : await supabase
-                    .from('workflows')
-                    .select('*')
-                    .order('created_at', { ascending: false });
-            data = result.data as any[] | null;
-            error = result.error;
+        const normalizedWebsiteUrl = website_url?.trim();
+        if (website_url !== undefined && !normalizedWebsiteUrl) {
+            throw new Error('website_url cannot be empty.');
+        }
+        const normalizedStatus = status?.trim();
+        const normalizedTitleContains = title_contains?.trim();
+        if (title_contains !== undefined && !normalizedTitleContains) {
+            throw new Error('title_contains cannot be empty.');
         }
 
+        const hostnameFilter = website_url_match === 'hostname' && normalizedWebsiteUrl
+            ? normalizeWebsiteHostname(normalizedWebsiteUrl)
+            : undefined;
+        const includeSteps = show_steps || show_selector_strategies;
+        const workflowColumns = 'id, title, website_url, description, success_criteria, status, created_at';
+        const stepColumns = 'id, workflow_id, step_order, action, action_value, description, selectors';
+
+        let actionWorkflowIds: number[] | undefined;
+        if (action) {
+            const {data: actionRows, error: actionError} = await supabase
+                .from('workflow_steps')
+                .select('workflow_id')
+                .eq('action', action);
+
+            if (actionError) {
+                throw new Error(`Failed to filter workflows by action: ${actionError.message}`);
+            }
+
+            actionWorkflowIds = [
+                ...new Set(
+                    (Array.isArray(actionRows) ? actionRows : [])
+                        .filter(isRecord)
+                        .map(row => row.workflow_id)
+                        .filter(
+                            (workflowId): workflowId is number =>
+                                typeof workflowId === 'number' && Number.isSafeInteger(workflowId),
+                        ),
+                ),
+            ];
+        }
+
+        const select = includeSteps
+            ? `${workflowColumns}, workflow_steps (${stepColumns})`
+            : workflowColumns;
+
+        let query = supabase
+            .from('workflows')
+            .select(select, {count: 'exact'});
+
+        if (normalizedWebsiteUrl && website_url_match === 'exact') {
+            query = query.eq('website_url', normalizedWebsiteUrl);
+        }
+        if (normalizedStatus) {
+            query = query.eq('status', normalizedStatus);
+        }
+        if (normalizedTitleContains) {
+            query = query.ilike('title', `%${escapeLikePattern(normalizedTitleContains)}%`);
+        }
+        if (actionWorkflowIds) {
+            if (actionWorkflowIds.length === 0) {
+                actionWorkflowIds = [-1];
+            }
+            query = query.in('id', actionWorkflowIds);
+        }
+
+        query = query
+            .order(sort_by, {ascending: sort_order === 'asc'})
+            .order('id', {ascending: true});
+
+        const useDatabasePagination =
+            hostnameFilter === undefined && action === undefined && limit !== undefined;
+        if (useDatabasePagination) {
+            query = query.range(offset, offset + limit - 1);
+        }
+
+        const {data, error, count} = await query;
         if (error) {
             throw new Error(`Failed to list workflows: ${error.message}`);
         }
 
-        if (!data || data.length === 0) {
-            response.appendResponseLine('No workflows found in the database.');
-            return;
+        const normalizedWorkflows = normalizeWorkflowRows(data, {
+            showSteps: includeSteps,
+            showSelectorStrategies: show_selector_strategies,
+            maxSteps: max_steps,
+        });
+        const hostnameFilteredWorkflows = hostnameFilter === undefined
+            ? normalizedWorkflows
+            : normalizedWorkflows.filter(workflow =>
+                workflowMatchesHostname(workflow.website_url, hostnameFilter),
+            );
+        const sortedWorkflows = sortWorkflowItems(
+            hostnameFilteredWorkflows,
+            sort_by,
+            sort_order,
+        );
+        const total = useDatabasePagination
+            ? count ?? sortedWorkflows.length
+            : sortedWorkflows.length;
+        const page = createWorkflowListPage(sortedWorkflows, {
+            total,
+            offset,
+            limit,
+            filters: {
+                website_url: normalizedWebsiteUrl,
+                website_url_match: normalizedWebsiteUrl ? website_url_match : undefined,
+                status: normalizedStatus,
+                title_contains: normalizedTitleContains,
+                action,
+            },
+            sortBy: sort_by,
+            sortOrder: sort_order,
+            alreadyPaginated: useDatabasePagination,
+        });
+        const summary = summarizeWorkflowList(page);
+
+        response.setStructuredContent?.({
+            ...page,
+            summary,
+            show_steps: includeSteps,
+            show_selector_strategies,
+            max_steps: max_steps ?? null,
+        });
+
+        const activeFilters = Object.entries(page.filters)
+            .filter((entry): entry is [string, string] => entry[1] !== undefined)
+            .map(([key, value]) => `${key}=${value.replace(/\s+/g, ' ').trim()}`);
+        if (activeFilters.length > 0) {
+            response.appendResponseLine(`Filters: ${activeFilters.join(', ')}`);
         }
-
-        for (const workflow of data) {
-            response.appendResponseLine(`Workflow: ${workflow.title} (ID: ${workflow.id})`);
-            response.appendResponseLine(`  Status: ${workflow.status}`);
-            if (workflow.website_url) response.appendResponseLine(`  URL: ${workflow.website_url}`);
-            if (workflow.description) response.appendResponseLine(`  Description: ${workflow.description}`);
-            if (workflow.success_criteria) response.appendResponseLine(`  Success Criteria: ${workflow.success_criteria}`);
-
-            if (show_steps && workflow.workflow_steps && workflow.workflow_steps.length > 0) {
-                response.appendResponseLine('  Steps:');
-                const sortedSteps = workflow.workflow_steps.sort((a: any, b: any) => a.step_order - b.step_order);
-                for (const step of sortedSteps) {
-                    response.appendResponseLine(`    ${step.step_order}. ${step.action}: ${step.description || ''} (${step.action_value || ''})`);
-                    if (step.action === 'choice_click' && isChoiceSelectorsData(step.selectors)) {
-                        const choiceKeys = Object.keys(step.selectors.choices);
-                        response.appendResponseLine(`      Choices: ${choiceKeys.length > 0 ? choiceKeys.join(', ') : '(none)'}`);
-                        for (const choiceKey of choiceKeys) {
-                            const choiceSelectors = step.selectors.choices[choiceKey];
-                            response.appendResponseLine(`        ${choiceKey} selector: ${choiceSelectors.best_selector || '(none)'}`);
-                        }
-                    } else if (isSelectorsData(step.selectors)) {
-                        response.appendResponseLine(`      Selector: ${step.selectors.best_selector || '(none)'}`);
-                    }
-                }
-            } else if (show_steps) {
-                response.appendResponseLine('  No steps defined for this workflow.');
+        if (page.total > 0) {
+            response.appendResponseLine(
+                `Summary: ${summary.workflow_count} workflow(s) returned, ${summary.step_count} visible step(s).`,
+            );
+            if (Object.keys(summary.action_counts).length > 0) {
+                response.appendResponseLine(
+                    `Actions: ${Object.entries(summary.action_counts)
+                        .map(([actionName, count]) => `${actionName}=${count}`)
+                        .join(', ')}`,
+                );
             }
-            response.appendResponseLine('---');
+        }
+        const workflowLines = formatWorkflowListLines(page);
+        if (workflowLines.length > 0) {
+            response.appendUntrustedPageContent(
+                workflowLines.join('\n'),
+                'workflow metadata',
+            );
         }
     },
 });
@@ -358,7 +516,22 @@ interface SelectorsData {
         name: string;
         description: string;
     };
+    target_signature?: ElementSignature;
     frame_selectors?: string[];
+}
+
+interface ElementSignature {
+    tag_name: string;
+    id: string;
+    role: string;
+    aria_label: string;
+    name: string;
+    type: string;
+    placeholder: string;
+    test_id: string;
+    title: string;
+    href: string;
+    text: string;
 }
 
 interface ChoiceSelectorsData {
@@ -381,6 +554,107 @@ function isSelectorsData(selectors: WorkflowStep['selectors']): selectors is Sel
 
 function makeAxSelectorValue(role: string, name: string): string {
     return JSON.stringify({ role, name });
+}
+
+async function getElementSignature(
+    handle: ElementHandle<Element>,
+): Promise<ElementSignature> {
+    return await handle.evaluate((element: Element) => {
+        const normalize = (value: string | null): string =>
+            (value || '').replace(/\s+/g, ' ').trim();
+        const tagName = element.tagName.toLowerCase();
+        const explicitRole = element.getAttribute('role');
+        let implicitRole = '';
+        if (tagName === 'button') {
+            implicitRole = 'button';
+        } else if (tagName === 'a' && element.hasAttribute('href')) {
+            implicitRole = 'link';
+        } else if (tagName === 'input') {
+            const inputType = element.getAttribute('type') || 'text';
+            implicitRole = ['button', 'submit', 'reset'].includes(inputType)
+                ? 'button'
+                : ['checkbox', 'radio'].includes(inputType)
+                    ? inputType
+                    : 'textbox';
+        } else if (tagName === 'textarea') {
+            implicitRole = 'textbox';
+        } else if (tagName === 'select') {
+            implicitRole = 'combobox';
+        }
+
+        return {
+            tag_name: tagName,
+            id: element.id,
+            role: normalize(explicitRole) || implicitRole,
+            aria_label: normalize(element.getAttribute('aria-label')),
+            name: normalize(element.getAttribute('name')),
+            type: normalize(element.getAttribute('type')),
+            placeholder: normalize(element.getAttribute('placeholder')),
+            test_id: normalize(
+                element.getAttribute('data-testid') ||
+                element.getAttribute('data-test') ||
+                element.getAttribute('data-cy'),
+            ),
+            title: normalize(element.getAttribute('title')),
+            href: normalize(element.getAttribute('href')),
+            text: normalize(element.textContent).slice(0, 200),
+        };
+    });
+}
+
+async function matchesElementSignature(
+    handle: ElementHandle<Element>,
+    expected: ElementSignature | undefined,
+): Promise<boolean> {
+    if (!expected) {
+        return true;
+    }
+
+    return await handle.evaluate((element: Element, target: ElementSignature) => {
+        const normalize = (value: string | null): string =>
+            (value || '').replace(/\s+/g, ' ').trim();
+        const tagName = element.tagName.toLowerCase();
+        const explicitRole = element.getAttribute('role');
+        let implicitRole = '';
+        if (tagName === 'button') {
+            implicitRole = 'button';
+        } else if (tagName === 'a' && element.hasAttribute('href')) {
+            implicitRole = 'link';
+        } else if (tagName === 'input') {
+            const inputType = element.getAttribute('type') || 'text';
+            implicitRole = ['button', 'submit', 'reset'].includes(inputType)
+                ? 'button'
+                : ['checkbox', 'radio'].includes(inputType)
+                    ? inputType
+                    : 'textbox';
+        } else if (tagName === 'textarea') {
+            implicitRole = 'textbox';
+        } else if (tagName === 'select') {
+            implicitRole = 'combobox';
+        }
+
+        const actual: ElementSignature = {
+            tag_name: tagName,
+            id: element.id,
+            role: normalize(explicitRole) || implicitRole,
+            aria_label: normalize(element.getAttribute('aria-label')),
+            name: normalize(element.getAttribute('name')),
+            type: normalize(element.getAttribute('type')),
+            placeholder: normalize(element.getAttribute('placeholder')),
+            test_id: normalize(
+                element.getAttribute('data-testid') ||
+                element.getAttribute('data-test') ||
+                element.getAttribute('data-cy'),
+            ),
+            title: normalize(element.getAttribute('title')),
+            href: normalize(element.getAttribute('href')),
+            text: normalize(element.textContent).slice(0, 200),
+        };
+
+        return Object.entries(target).every(([key, value]) =>
+            actual[key as keyof ElementSignature] === value,
+        );
+    }, expected);
 }
 
 async function generateSelectorsForElement(
@@ -593,19 +867,28 @@ function addAxSelectorStrategies(
         axStrategies.push({
             type: 'ax-role-name',
             value: makeAxSelectorValue(role, name),
-            priority: 2.5,
+            // Accessibility names are useful fallbacks, but can be shared by
+            // several controls. Prefer selectors tied to the DOM structure.
+            priority: 12,
         });
     }
     axStrategies.push({
         type: 'ax-name',
         value: name,
-        priority: 8.5,
+        priority: 13,
     });
 
-    const seen = new Set(strategies.map(strategy => `${strategy.type}\u0000${strategy.value}`));
+    const seen = new Set<string>();
     for (const strategy of axStrategies) {
         const key = `${strategy.type}\u0000${strategy.value}`;
-        if (!seen.has(key)) {
+        const existing = strategies.find(candidate =>
+            `${candidate.type}\u0000${candidate.value}` === key,
+        );
+        if (existing) {
+            // Normalize old persisted selector data that used the unsafe
+            // accessibility priorities.
+            existing.priority = strategy.priority;
+        } else if (!seen.has(key)) {
             strategies.push(strategy);
             seen.add(key);
         }
@@ -684,6 +967,7 @@ async function buildSelectorsDataForUid(
             }
         }
 
+        const target_signature = await getElementSignature(selectorHandle);
         const elementFrame = selectorHandle.frame;
         const uniqueStrategies = addAxSelectorStrategies(
             await generateSelectorsForElement(selectorHandle),
@@ -722,6 +1006,7 @@ async function buildSelectorsDataForUid(
             best_selector,
             strategies: uniqueStrategies,
             ax_node_meta,
+            target_signature,
             frame_selectors: frameSelectors.length > 0 ? frameSelectors : undefined,
         };
     } finally {
@@ -729,77 +1014,127 @@ async function buildSelectorsDataForUid(
     }
 }
 
-export const addWorkflowStep = definePageTool({
+export const addWorkflowStep = defineTool({
     name: 'add_workflow_step',
-    description: 'Adds, inserts, or updates a workflow step. Use insert_at to insert a new step and shift later steps forward.',
+    description: 'Adds or inserts a new workflow step. Use update_workflow_step to modify an existing step.',
     annotations: {
         category: ToolCategory.INPUT,
         readOnlyHint: false,
     },
     schema: {
-        workflow_id: zod.number().describe('The ID of the workflow to add the step to'),
+        workflow_id: zod.number().int().positive().describe('The ID of the workflow to add the step to'),
         action: zod.enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow']).describe('The action type for this step'),
-        uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll actions.'),
+        uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll, and upload_image actions.'),
         choices: zod.record(zod.string(), zod.string()).optional().describe('For choice_click actions, a map of choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.'),
         action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)'),
         step_description: zod.string().optional().describe('A description of what this step does'),
-        step_order: zod.number().optional().describe('The order of this step. If not provided, will be set to last + 1. If exists, will update.'),
+        step_order: zod.number().int().positive().optional().describe('The order of this new step. If not provided, it will be set to last + 1. Fails if the order is already in use; use update_workflow_step to modify an existing step.'),
         insert_at: zod.number().int().positive().optional().describe('Insert a new step at this order and shift this and all later steps forward. Cannot be used with step_order.'),
+        ...pageIdSchema,
     },
-    handler: async (request, response) => {
-        const { workflow_id, action, uid, choices, action_value, step_description, step_order, insert_at } = request.params;
+    handler: async (request, response, context) => {
+        const { workflow_id, action, uid, choices, action_value, step_description, step_order, insert_at, pageId } = request.params;
 
         if (step_order !== undefined && insert_at !== undefined) {
-            throw new Error('step_order and insert_at cannot be used together. Use step_order to update and insert_at to insert.');
+            throw new Error('step_order and insert_at cannot be used together. Use step_order to add at an exact unused order or insert_at to shift later steps.');
         }
 
-        // Actions that require an element
-        const elementRequiredActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
-        const requiresElement = elementRequiredActions.includes(action);
+        validateWorkflowStepDefinition({
+            action,
+            actionValue: action_value,
+            uid,
+            choices,
+        });
+
+        const { data: workflow, error: workflowError } = await supabase
+            .from('workflows')
+            .select('id')
+            .eq('id', workflow_id)
+            .maybeSingle();
+
+        if (workflowError) {
+            throw new Error(`Failed to fetch workflow ${workflow_id}: ${workflowError.message}`);
+        }
+
+        if (!workflow) {
+            throw new Error(`Workflow ${workflow_id} not found.`);
+        }
+
+        let existingStep: {id: number} | null = null;
+        if (step_order !== undefined) {
+            const { data, error } = await supabase
+                .from('workflow_steps')
+                .select('id')
+                .eq('workflow_id', workflow_id)
+                .eq('step_order', step_order)
+                .maybeSingle();
+
+            if (error) {
+                throw new Error(`Failed to check workflow step ${step_order}: ${error.message}`);
+            }
+            existingStep = data;
+        }
+
+        if (existingStep) {
+            throw new Error(
+                `Workflow step ${step_order} already exists in workflow ${workflow_id}. Use update_workflow_step to modify it, or insert_at to insert a new step and shift later steps.`,
+            );
+        }
+
+        if (action === 'nav' && action_value && !isVariableTemplate(action_value)) {
+            await checkNavigationSecurity(action_value.trim());
+        }
 
         let selectorsData: SelectorsData | ChoiceSelectorsData | null = null;
 
         if (action === 'choice_click') {
-            if (!choices || Object.keys(choices).length === 0) {
-                throw new Error('Action "choice_click" requires a choices parameter mapping choice keys to element uids.');
-            }
-            if (!action_value) {
-                throw new Error('Action "choice_click" requires action_value to specify the choice key or a variable template like {{choice}}.');
-            }
-
+            const selectorPage = pageId !== undefined
+                ? context.getPageById(pageId)
+                : context.getSelectedMcpPage();
             const choiceSelectors: Record<string, SelectorsData> = {};
-            for (const [choiceKey, choiceUid] of Object.entries(choices)) {
-                if (!choiceKey.trim()) {
-                    throw new Error('Action "choice_click" received an empty choice key.');
-                }
-                choiceSelectors[choiceKey] = await buildSelectorsDataForUid(request.page, choiceUid);
+            for (const [choiceKey, choiceUid] of Object.entries(choices ?? {})) {
+                choiceSelectors[choiceKey] = await buildSelectorsDataForUid(selectorPage, choiceUid.trim());
             }
             selectorsData = { choices: choiceSelectors };
-        } else if (uid) {
-            selectorsData = await buildSelectorsDataForUid(request.page, uid);
-        } else if (requiresElement) {
-            throw new Error(`Action "${action}" requires a uid parameter to identify the target element.`);
+        } else if (uid !== undefined) {
+            const selectorPage = pageId !== undefined
+                ? context.getPageById(pageId)
+                : context.getSelectedMcpPage();
+            selectorsData = await buildSelectorsDataForUid(selectorPage, uid.trim());
         }
 
-        if (action === 'run_workflow' && !action_value) {
-            throw new Error('Action "run_workflow" requires action_value to specify the target workflow ID or a variable template like {{workflow_id}}.');
-        }
-
-        // Determine step_order. insert_at always creates a new row instead of updating.
         let finalStepOrder = insert_at ?? step_order;
 
         if (finalStepOrder === undefined) {
-            // Get the max step_order for this workflow
-            const { data: maxStepData } = await supabase
+            const { data: maxStepData, error: maxStepError } = await supabase
                 .from('workflow_steps')
                 .select('step_order')
                 .eq('workflow_id', workflow_id)
                 .order('step_order', { ascending: false })
                 .limit(1)
-                .single();
+                .maybeSingle();
+
+            if (maxStepError) {
+                throw new Error(`Failed to determine the next workflow step order: ${maxStepError.message}`);
+            }
 
             finalStepOrder = maxStepData ? maxStepData.step_order + 1 : 1;
         }
+
+        const restoreShiftedSteps = async (): Promise<string[]> => {
+            const rollbackErrors: string[] = [];
+            for (const shiftedStep of [...shiftedSteps].reverse()) {
+                const { error } = await supabase
+                    .from('workflow_steps')
+                    .update({ step_order: shiftedStep.step_order })
+                    .eq('id', shiftedStep.id);
+
+                if (error) {
+                    rollbackErrors.push(`step ${shiftedStep.id}: ${error.message}`);
+                }
+            }
+            return rollbackErrors;
+        };
 
         const shiftedSteps: Array<{ id: number; step_order: number }> = [];
         if (insert_at !== undefined) {
@@ -821,79 +1156,42 @@ export const addWorkflowStep = definePageTool({
                     .eq('id', step.id);
 
                 if (error) {
-                    for (const shiftedStep of [...shiftedSteps].reverse()) {
-                        await supabase
-                            .from('workflow_steps')
-                            .update({ step_order: shiftedStep.step_order })
-                            .eq('id', shiftedStep.id);
-                    }
-                    throw new Error(`Failed to shift workflow steps for insertion: ${error.message}`);
+                    const rollbackErrors = await restoreShiftedSteps();
+                    const rollbackMessage = rollbackErrors.length > 0
+                        ? ` Rollback also failed for ${rollbackErrors.join(', ')}.`
+                        : '';
+                    throw new Error(`Failed to shift workflow steps for insertion: ${error.message}.${rollbackMessage}`);
                 }
                 shiftedSteps.push(step);
             }
         }
 
-        // Check if step_order already exists (upsert logic). insert_at has already made room.
-        const { data: existingStep } = insert_at === undefined
-            ? await supabase
-                .from('workflow_steps')
-                .select('id')
-                .eq('workflow_id', workflow_id)
-                .eq('step_order', finalStepOrder)
-                .single()
-            : { data: null };
+        const { data: result, error } = await supabase
+            .from('workflow_steps')
+            .insert([{
+                workflow_id,
+                step_order: finalStepOrder,
+                action,
+                action_value,
+                description: step_description,
+                selectors: selectorsData,
+            }])
+            .select()
+            .single();
 
-        let result;
-        if (existingStep) {
-            // Update existing step
-            const { data, error } = await supabase
-                .from('workflow_steps')
-                .update({
-                    action,
-                    action_value,
-                    description: step_description,
-                    selectors: selectorsData,
-                })
-                .eq('id', existingStep.id)
-                .select()
-                .single();
-
-            if (error) {
-                throw new Error(`Failed to update workflow step: ${error.message}`);
-            }
-            result = data;
-            response.appendResponseLine(`Successfully updated step ${finalStepOrder} in workflow ${workflow_id}`);
-        } else {
-            // Insert new step
-            const { data, error } = await supabase
-                .from('workflow_steps')
-                .insert([{
-                    workflow_id,
-                    step_order: finalStepOrder,
-                    action,
-                    action_value,
-                    description: step_description,
-                    selectors: selectorsData,
-                }])
-                .select()
-                .single();
-
-            if (error) {
-                for (const shiftedStep of [...shiftedSteps].reverse()) {
-                    await supabase
-                        .from('workflow_steps')
-                        .update({ step_order: shiftedStep.step_order })
-                        .eq('id', shiftedStep.id);
-                }
-                throw new Error(`Failed to add workflow step: ${error.message}`);
-            }
-            result = data;
-            response.appendResponseLine(
-                insert_at === undefined
-                    ? `Successfully added step ${finalStepOrder} to workflow ${workflow_id}`
-                    : `Successfully inserted step ${finalStepOrder} into workflow ${workflow_id}`,
-            );
+        if (error) {
+            const rollbackErrors = await restoreShiftedSteps();
+            const rollbackMessage = rollbackErrors.length > 0
+                ? ` Rollback also failed for ${rollbackErrors.join(', ')}.`
+                : '';
+            throw new Error(`Failed to add workflow step: ${error.message}.${rollbackMessage}`);
         }
+
+        response.appendResponseLine(
+            insert_at === undefined
+                ? `Successfully added step ${finalStepOrder} to workflow ${workflow_id}`
+                : `Successfully inserted step ${finalStepOrder} into workflow ${workflow_id}`,
+        );
 
         response.appendResponseLine(`Action: ${result.action}`);
         if (isChoiceSelectorsData(selectorsData)) {
@@ -1457,10 +1755,11 @@ interface WorkflowStep {
 async function findElementByStrategies(
     page: Page | Frame,
     strategies: SelectorStrategy[],
+    targetSignature?: ElementSignature,
 ): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
     for (const strategy of strategies) {
         try {
-            let element: ElementHandle | null = null;
+            let element: ElementHandle<Element> | null = null;
 
             if (strategy.type === 'ax-role-name' || strategy.type === 'ax-name') {
                 const elementHandle = await page.evaluateHandle((selectorType: string, selectorValue: string) => {
@@ -1501,6 +1800,8 @@ async function findElementByStrategies(
                         : { role: '', name: selectorValue };
                     const expectedRole = normalize(parsed.role).toLowerCase();
                     const expectedName = normalize(parsed.name);
+                    let match: Element | null = null;
+                    let matchCount = 0;
 
                     for (const element of allElements(document)) {
                         const role = normalize(element.getAttribute('role') || implicitRole(element)).toLowerCase();
@@ -1509,10 +1810,11 @@ async function findElementByStrategies(
                             continue;
                         }
                         if (name === expectedName) {
-                            return element;
+                            match = element;
+                            matchCount++;
                         }
                     }
-                    return null;
+                    return matchCount === 1 ? match : null;
                 }, strategy.type, strategy.value);
                 element = elementHandle.asElement() as ElementHandle<Element> | null;
                 if (!element) {
@@ -1521,28 +1823,24 @@ async function findElementByStrategies(
             } else if (strategy.type === 'xpath' || strategy.type === 'text') {
                 // XPath selectors
                 const elements = await page.$$('xpath/' + strategy.value);
-                if (elements.length > 0) {
+                if (elements.length === 1) {
                     element = elements[0];
+                } else {
+                    await Promise.all(elements.map(candidate => candidate.dispose()));
                 }
             } else {
                 const elementHandle = await page.evaluateHandle((selectorValue: string) => {
-                    const query = (root: Document | ShadowRoot): Element | null => {
-                        const match = root.querySelector(selectorValue);
-                        if (match) {
-                            return match;
-                        }
+                    const matches: Element[] = [];
+                    const collect = (root: Document | ShadowRoot): void => {
+                        matches.push(...root.querySelectorAll(selectorValue));
                         for (const element of root.querySelectorAll('*')) {
-                            if (!element.shadowRoot) {
-                                continue;
-                            }
-                            const shadowMatch = query(element.shadowRoot);
-                            if (shadowMatch) {
-                                return shadowMatch;
+                            if (element.shadowRoot) {
+                                collect(element.shadowRoot);
                             }
                         }
-                        return null;
                     };
-                    return query(document);
+                    collect(document);
+                    return matches.length === 1 ? matches[0] : null;
                 }, strategy.value);
                 element = elementHandle.asElement() as ElementHandle<Element> | null;
                 if (!element) {
@@ -1551,6 +1849,10 @@ async function findElementByStrategies(
             }
 
             if (element) {
+                if (!await matchesElementSignature(element, targetSignature)) {
+                    await element.dispose();
+                    continue;
+                }
                 return { element, usedStrategy: strategy };
             }
         } catch {
@@ -1564,6 +1866,7 @@ async function findElementByStrategies(
 async function findElementByAccessibilitySnapshot(
     page: Page,
     strategies: SelectorStrategy[],
+    targetSignature?: ElementSignature,
 ): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
     const axStrategies = strategies.filter(strategy =>
         strategy.type === 'ax-role-name' || strategy.type === 'ax-name',
@@ -1590,30 +1893,40 @@ async function findElementByAccessibilitySnapshot(
             normalize(node.name) === normalize(parsed.name);
     };
 
-    const walk = async (node: SerializedAXNode): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> => {
-        for (const strategy of axStrategies) {
-            if (!matches(node, strategy)) {
-                continue;
-            }
-            const handle = await node.elementHandle();
-            const element = handle?.asElement() as ElementHandle<Element> | null;
-            if (element) {
-                return { element, usedStrategy: strategy };
-            }
-            void handle?.dispose();
+    const collectMatches = (
+        node: SerializedAXNode,
+        strategy: SelectorStrategy,
+        matchesForStrategy: SerializedAXNode[],
+    ): void => {
+        if (matches(node, strategy)) {
+            matchesForStrategy.push(node);
         }
-
         for (const child of node.children || []) {
-            const result = await walk(child);
-            if (result) {
-                return result;
-            }
+            collectMatches(child, strategy, matchesForStrategy);
         }
-
-        return null;
     };
 
-    return await walk(snapshot);
+    for (const strategy of axStrategies) {
+        const matchesForStrategy: SerializedAXNode[] = [];
+        collectMatches(snapshot, strategy, matchesForStrategy);
+        if (matchesForStrategy.length !== 1) {
+            continue;
+        }
+
+        const handle = await matchesForStrategy[0].elementHandle();
+        const element = handle?.asElement() as ElementHandle<Element> | null;
+        if (!element) {
+            void handle?.dispose();
+            continue;
+        }
+        if (!await matchesElementSignature(element, targetSignature)) {
+            await element.dispose();
+            continue;
+        }
+        return {element, usedStrategy: strategy};
+    }
+
+    return null;
 }
 
 async function findElementBySelectors(
@@ -1632,6 +1945,7 @@ async function findElementBySelectors(
             const result = await findElementByStrategies(
                 targetFrame,
                 strategies,
+                selectors.target_signature,
             );
             if (result) {
                 return result;
@@ -1641,13 +1955,21 @@ async function findElementBySelectors(
         }
 
         for (const frame of page.frames()) {
-            const result = await findElementByStrategies(frame, strategies);
+            const result = await findElementByStrategies(
+                frame,
+                strategies,
+                selectors.target_signature,
+            );
             if (result) {
                 return result;
             }
         }
 
-        const axResult = await findElementByAccessibilitySnapshot(page, strategies);
+        const axResult = await findElementByAccessibilitySnapshot(
+            page,
+            strategies,
+            selectors.target_signature,
+        );
         if (axResult) {
             return axResult;
         }
@@ -1900,6 +2222,28 @@ async function runAndCapturePopup(
     }
 }
 
+async function ensureWhitelistedPage(
+    page: Page,
+    waitForInitialNavigation = false,
+): Promise<void> {
+    if (waitForInitialNavigation && page.url() === 'about:blank') {
+        try {
+            await page.waitForNavigation({
+                waitUntil: 'domcontentloaded',
+                timeout: 5_000,
+            });
+        } catch {
+            // A popup can intentionally remain blank until a later action.
+        }
+    }
+
+    if (page.url() === 'about:blank') {
+        return;
+    }
+
+    await checkNavigationSecurity(page.url());
+}
+
 async function clickBySelectorsLikeHuman(
     page: ContextPage,
     selectors: SelectorsData,
@@ -1919,7 +2263,11 @@ async function clickBySelectorsLikeHuman(
         throw new Error('Element not found with any selector strategy');
     }
 
-    response.appendResponseLine(`  Using selector: ${result.usedStrategy.type} = "${result.usedStrategy.value}"`);
+    response.appendResponseLine('  Using page-derived selector:');
+    response.appendUntrustedPageContent(
+        JSON.stringify(result.usedStrategy),
+        'page-derived selector data',
+    );
 
     const elementHandle = result.element;
 
@@ -1957,12 +2305,14 @@ async function clickBySelectorsLikeHuman(
     );
 
     if (popupPage) {
+        await ensureWhitelistedPage(popupPage, true);
         const selectedPage = await context.selectPptrPage(popupPage);
         await injectSymbolicCursor(selectedPage.pptrPage);
         response.appendResponseLine('  Selected newly opened page.');
         return { page: selectedPage, usedStrategy: result.usedStrategy };
     }
 
+    await ensureWhitelistedPage(page.pptrPage);
     return { page, usedStrategy: result.usedStrategy };
 }
 
@@ -2014,6 +2364,7 @@ export const runWorkflow = definePageTool({
 
         // Inject symbolic cursor for visual tracking
         await injectSymbolicCursor(page.pptrPage);
+        try {
 
         // Pre-execution variable validation: scan all steps for required variables
         const missingVariables: Array<{ variable: string; stepOrder: number; description: string }> = [];
@@ -2052,6 +2403,9 @@ export const runWorkflow = definePageTool({
             let allSucceeded = true;
 
         for (const step of workflowSteps) {
+            if (page.pptrPage.url() !== 'about:blank') {
+                await ensureWhitelistedPage(page.pptrPage);
+            }
             response.appendResponseLine(`\n▶ Executing step ${step.step_order}: ${step.action}`);
             if (step.description) {
                 response.appendResponseLine(`  Description: ${step.description}`);
@@ -2155,6 +2509,7 @@ export const runWorkflow = definePageTool({
                                         await page.pptrPage.mouse.up();
                                         await sleep(humanDelay(100, 0.3));
                                     });
+                                    await ensureWhitelistedPage(page.pptrPage);
                                 }
                             }
                         }
@@ -2216,6 +2571,7 @@ export const runWorkflow = definePageTool({
 
                         // Wait for page to settle
                         await sleep(humanDelay(800, 0.3));
+                        await ensureWhitelistedPage(page.pptrPage);
 
                         // Re-inject symbolic cursor and pulse overlay (destroyed by navigation)
                         await injectSymbolicCursor(page.pptrPage);
@@ -2316,19 +2672,23 @@ export const runWorkflow = definePageTool({
 
                         const elementHandle = result.element;
                         const extractedText = await elementHandle.evaluate((el: Element) => el.textContent || '');
-                        response.appendResponseLine(`  Extracted: "${extractedText.trim().substring(0, 100)}"`);
+                        response.appendResponseLine('  Extracted page content:');
+                        response.appendUntrustedPageContent(
+                            extractedText.trim().substring(0, 100),
+                            'extracted page content',
+                        );
 
                         executionResults.push({ step: step.step_order, action: 'extract', success: true, details: extractedText.trim().substring(0, 50) });
                         break;
                     }
 
                     case 'screenshot': {
-                        const filename = actionValue || `workflow_${currentWorkflowId}_step_${step.step_order}.png`;
+                        const filename = actionValue || `workflow_${currentWorkflowId}_step_${step.step_order}_${Date.now()}.png`;
                         const screenshot = await page.pptrPage.screenshot({ encoding: 'binary' });
-                        await context.saveFile(screenshot as Uint8Array, filename);
-                        response.appendResponseLine(`  Screenshot saved: ${filename}`);
+                        const savedFile = await context.saveFile(screenshot as Uint8Array, filename);
+                        response.appendResponseLine(`  Screenshot saved: ${savedFile.filename}`);
 
-                        executionResults.push({ step: step.step_order, action: 'screenshot', success: true, details: filename });
+                        executionResults.push({ step: step.step_order, action: 'screenshot', success: true, details: savedFile.filename });
                         break;
                     }
 
@@ -2351,16 +2711,11 @@ export const runWorkflow = definePageTool({
 
                         response.appendResponseLine(`  Downloading image from: ${actionValue}`);
 
-                        // Download the image
-                        const imageResponse = await fetch(actionValue);
-                        if (!imageResponse.ok) {
-                            throw new Error(`Failed to download image from ${actionValue}: ${imageResponse.statusText}`);
-                        }
-                        const arrayBuffer = await imageResponse.arrayBuffer();
-                        const uint8Array = new Uint8Array(arrayBuffer);
-
-                        // Save to temp file
-                        const { filepath: filePath } = await context.saveTemporaryFile(uint8Array, 'image/png');
+                        const image = await downloadWhitelistedImage(actionValue);
+                        const { filepath: filePath } = await context.saveTemporaryFile(
+                            image.data,
+                            image.filename,
+                        );
 
                         const uploadHandle = result.element;
                         try {
@@ -2452,8 +2807,17 @@ export const runWorkflow = definePageTool({
             } catch (err) {
                 allSucceeded = false;
                 const errorMessage = err instanceof Error ? err.message : String(err);
-                response.appendResponseLine(`  ✗ Step ${step.step_order} failed: ${errorMessage}`);
+                response.appendResponseLine(`  ✗ Step ${step.step_order} failed.`);
+                response.appendUntrustedPageContent(
+                    errorMessage,
+                    'page-derived error message',
+                );
                 executionResults.push({ step: step.step_order, action: step.action, success: false, details: errorMessage });
+
+                if (isSecurityViolation(err)) {
+                    response.appendResponseLine('  ⛔ Security violation detected. Workflow stopped; subsequent steps will not run.');
+                    throw err;
+                }
 
                 // Don't stop on error, continue with next step
                 continue;
@@ -2468,15 +2832,15 @@ export const runWorkflow = definePageTool({
 
         await executeSteps(workflow_id, steps as WorkflowStep[], [workflow_id]);
 
-        // Remove symbolic cursor
-        await removeSymbolicCursor(page.pptrPage);
-
         // Summary
         response.appendResponseLine('\n--- Execution Summary ---');
         const successCount = executionResults.filter(r => r.success).length;
         response.appendResponseLine(`Total steps: ${executionResults.length}`);
         response.appendResponseLine(`Successful: ${successCount}`);
         response.appendResponseLine(`Failed: ${executionResults.length - successCount}`);
+        } finally {
+            await removeSymbolicCursor(page.pptrPage);
+        }
         });
     },
 });
@@ -2580,6 +2944,7 @@ export const simulateWorkflow = definePageTool({
             document.head.appendChild(style);
         });
 
+        try {
         response.appendResponseLine(`🎬 Simulating workflow ${workflow_id} (${steps.length} steps)\n`);
 
         for (const step of steps as WorkflowStep[]) {
@@ -2749,21 +3114,32 @@ export const simulateWorkflow = definePageTool({
 
             } catch (err) {
                 const errorMessage = err instanceof Error ? err.message : String(err);
-                response.appendResponseLine(`  ✗ Simulation error: ${errorMessage}`);
+                response.appendResponseLine('  ✗ Simulation error.');
+                response.appendUntrustedPageContent(
+                    errorMessage,
+                    'page-derived error message',
+                );
+
+                if (isSecurityViolation(err)) {
+                    response.appendResponseLine('  ⛔ Security violation detected. Simulation stopped; subsequent steps will not run.');
+                    throw err;
+                }
             }
 
             // Short pause between steps
             await sleep(300);
         }
 
-        // Clean up simulation styles and symbolic cursor
-        await removeSymbolicCursor(page);
-        await page.evaluate(() => {
-            const style = document.getElementById('__wf_sim_style');
-            if (style) style.remove();
-        });
-
         response.appendResponseLine(`\n🎬 Simulation complete — ${steps.length} steps previewed`);
+        } finally {
+            // Clean up simulation styles and symbolic cursor even when a
+            // security violation stops the simulation early.
+            await removeSymbolicCursor(page);
+            await page.evaluate(() => {
+                const style = document.getElementById('__wf_sim_style');
+                if (style) style.remove();
+            });
+        }
     },
 });
 
@@ -2819,9 +3195,12 @@ export const clickLikeHuman = definePageTool({
             );
 
             if (popupPage) {
+                await ensureWhitelistedPage(popupPage, true);
                 const selectedPage = await context.selectPptrPage(popupPage);
                 await injectSymbolicCursor(selectedPage.pptrPage);
                 response.appendResponseLine('Selected newly opened page.');
+            } else {
+                await ensureWhitelistedPage(page.pptrPage);
             }
 
             await removeSymbolicCursor(page.pptrPage);
@@ -2829,6 +3208,9 @@ export const clickLikeHuman = definePageTool({
             response.appendResponseLine('Successfully clicked on the element with human-like behavior.');
         } catch (error) {
             await removeSymbolicCursor(page.pptrPage);
+            if (isSecurityViolation(error)) {
+                throw error;
+            }
             const message = error instanceof Error ? error.message : String(error);
             throw new Error(`Failed to click element: ${message}`);
         } finally {
@@ -2900,6 +3282,7 @@ export const typeLikeHuman = definePageTool({
                 await sleep(Math.max(50, Math.floor(gaussianRandom(95, 20))));
                 await page.pptrPage.mouse.up();
             });
+            await ensureWhitelistedPage(page.pptrPage);
 
             // Focus-to-first-keystroke delay
             await sleep(humanDelay(450, 0.4));
@@ -2915,6 +3298,9 @@ export const typeLikeHuman = definePageTool({
             response.appendResponseLine(`Successfully typed "${preview}" with human-like behavior.`);
         } catch (error) {
             await removeSymbolicCursor(page.pptrPage);
+            if (isSecurityViolation(error)) {
+                throw error;
+            }
             const message = error instanceof Error ? error.message : String(error);
             throw new Error(`Failed to type into element: ${message}`);
         } finally {
@@ -2941,6 +3327,8 @@ export const clickAtLikeHuman = definePageTool({
             const { x, y } = request.params;
 
         await injectSymbolicCursor(page.pptrPage);
+
+        try {
 
         // Add slight human imprecision to coordinates
         const targetX = x + gaussianRandom(0, 1.5);
@@ -2971,14 +3359,18 @@ export const clickAtLikeHuman = definePageTool({
         );
 
         if (popupPage) {
+            await ensureWhitelistedPage(popupPage, true);
             const selectedPage = await context.selectPptrPage(popupPage);
             await injectSymbolicCursor(selectedPage.pptrPage);
             response.appendResponseLine('Selected newly opened page.');
+        } else {
+            await ensureWhitelistedPage(page.pptrPage);
         }
 
-        await removeSymbolicCursor(page.pptrPage);
-
         response.appendResponseLine(`Successfully clicked at (${Math.round(targetX)}, ${Math.round(targetY)}) with human-like behavior.`);
+        } finally {
+            await removeSymbolicCursor(page.pptrPage);
+        }
         });
     },
 });

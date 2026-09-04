@@ -14,7 +14,10 @@ interface HelpCommand {
 
 const SERVICE_COMMANDS: HelpCommand[] = [
   {name: 'start', description: 'Start or restart the background service'},
-  {name: 'status', description: 'Show the background service status'},
+  {
+    name: 'status',
+    description: 'Show daemon health, uptime, version, and configuration',
+  },
   {name: 'stop', description: 'Stop the background service'},
 ];
 
@@ -186,7 +189,10 @@ export function renderRockstarHelp(
       (left, right) =>
         preferredOrder.indexOf(left.name) - preferredOrder.indexOf(right.name),
     );
-    lines.push('', ...renderCommandGroup(category, categoryCommands, terminalWidth));
+    lines.push(
+      '',
+      ...renderCommandGroup(category, categoryCommands, terminalWidth),
+    );
   }
 
   lines.push(

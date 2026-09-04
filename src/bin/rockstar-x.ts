@@ -18,11 +18,15 @@ import {
   sendCommand,
   handleResponse,
 } from '../daemon/client.js';
+import {
+  createUnavailableDaemonStatus,
+  formatDaemonStatus,
+  normalizeDaemonStatus,
+} from '../daemon/status.js';
 import {isDaemonRunning, serializeArgs} from '../daemon/utils.js';
 import {logDisclaimers} from '../index.js';
 import {hideBin, yargs, type CallToolResult} from '../third_party/index.js';
 import type {Response as ToolResponse} from '../tools/ToolDefinition.js';
-import {checkForUpdates} from '../utils/check-for-updates.js';
 import {VERSION} from '../version.js';
 
 import {cliOptions, parseArguments} from './chrome-devtools-mcp-cli-options.js';
@@ -30,9 +34,7 @@ import {commands} from './rockstarxCliDefinitions.js';
 import {renderRockstarHelp} from './rockstarxHelp.js';
 import {copyRockstarSkillToAgents} from './rockstarxSkill.js';
 
-await checkForUpdates(
-  'Run `npm install -g chrome-devtools-mcp@latest` and `rockstar start` to update and restart the daemon.',
-);
+const rawArgs = hideBin(process.argv);
 
 async function start(args: string[]) {
   const combinedArgs = [...args, ...defaultArgs];
@@ -58,9 +60,13 @@ async function runListWorkflowsWithoutDaemon(
 ): Promise<void> {
   const {listWorkflows} = await import('../tools/workflow.js');
   const responseLines: string[] = [];
+  let structuredContent: Record<string, unknown> | undefined;
   const response = {
     appendResponseLine(value: string) {
       responseLines.push(value);
+    },
+    setStructuredContent(value: Record<string, unknown>) {
+      structuredContent = value;
     },
   } as ToolResponse;
 
@@ -71,13 +77,16 @@ async function runListWorkflowsWithoutDaemon(
   );
 
   if (outputFormat === 'json') {
-    console.log(JSON.stringify({message: responseLines.join('\n')}));
+    console.log(
+      JSON.stringify(
+        structuredContent ?? {message: responseLines.join('\n')},
+      ),
+    );
   } else {
     console.log(responseLines.join('\n'));
   }
 }
 
-const rawArgs = hideBin(process.argv);
 if (
   rawArgs.length === 0 ||
   (rawArgs.length === 1 && ['--help', '-h'].includes(rawArgs[0]))
@@ -87,13 +96,20 @@ if (
 }
 
 function parseJsonObjectArg(argName: string, value: unknown): unknown {
-  if (typeof value !== 'string' || !['choices', 'variables'].includes(argName)) {
+  if (
+    typeof value !== 'string' ||
+    !['choices', 'variables'].includes(argName)
+  ) {
     return value;
   }
 
   try {
     const parsed = JSON.parse(value) as unknown;
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+    ) {
       return parsed;
     }
   } catch {
@@ -138,9 +154,7 @@ const y = yargs(hideBin(process.argv))
   .scriptName('rockstar')
   .showHelpOnFail(true)
   .usage('rockstar <command> [...args] --flags')
-  .usage(
-    `Run 'rockstar <command> --help' for help on the specific command.`,
-  )
+  .usage(`Run 'rockstar <command> --help' for help on the specific command.`)
   .demandCommand()
   .recommendCommands()
   .version(VERSION)
@@ -176,33 +190,50 @@ y.command(
   },
 ).strict(); // Re-enable strict validation for other commands; this is applied to the yargs instance itself
 
-y.command('status', 'Checks if chrome-devtools-mcp is running', async () => {
-  if (isDaemonRunning()) {
-    console.log('chrome-devtools-mcp daemon is running.');
-    const response = await sendCommand({
-      method: 'status',
-    });
-    if (response.success) {
-      const data = JSON.parse(response.result) as {
-        pid: number | null;
-        socketPath: string;
-        startDate: string;
-        version: string;
-        args: string[];
-      };
+y.command(
+  'status',
+  'Show daemon health, uptime, version, and configuration',
+  y =>
+    y
+      .option('output-format', {
+        choices: ['md', 'json'],
+        default: 'md',
+      })
+      .strict(),
+  async argv => {
+    const outputFormat = argv['output-format'] as 'json' | 'md';
+
+    if (!isDaemonRunning()) {
       console.log(
-        `pid=${data.pid} socket=${data.socketPath} start-date=${data.startDate} version=${data.version}`,
+        formatDaemonStatus(createUnavailableDaemonStatus(), outputFormat),
       );
-      console.log(`args=${JSON.stringify(data.args)}`);
-    } else {
-      console.error('Error:', response.error);
       process.exit(1);
     }
-  } else {
-    console.log('chrome-devtools-mcp daemon is not running.');
-  }
-  process.exit(0);
-});
+
+    try {
+      const response = await sendCommand({
+        method: 'status',
+      });
+      if (!response.success) {
+        throw new Error(String(response.error));
+      }
+
+      const status = normalizeDaemonStatus(JSON.parse(response.result));
+      console.log(formatDaemonStatus(status, outputFormat));
+      process.exit(status.healthy ? 0 : 1);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (outputFormat === 'json') {
+        console.error(
+          JSON.stringify({running: false, healthy: false, error: message}),
+        );
+      } else {
+        console.error(`Error: ${message}`);
+      }
+      process.exit(1);
+    }
+  },
+);
 
 y.command('stop', 'Stop chrome-devtools-mcp if any', async () => {
   if (!isDaemonRunning()) {
@@ -225,7 +256,9 @@ y.command(
       process.exit(1);
     }
   },
-).alias({copy_rockstar_skill: 'install_rockstar_skill'}).strict();
+)
+  .alias({copy_rockstar_skill: 'install_rockstar_skill'})
+  .strict();
 
 for (const [commandName, commandDef] of Object.entries(commands)) {
   const args = commandDef.args;

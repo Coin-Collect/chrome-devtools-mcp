@@ -21,6 +21,7 @@ import type {
   ExtensionServiceWorker,
 } from '../types.js';
 import type {InstalledExtension} from '../utils/ExtensionRegistry.js';
+import type {SaveFileOptions} from '../utils/files.js';
 import type {PaginationOptions} from '../utils/types.js';
 
 import type {ToolCategory} from './categories.js';
@@ -66,9 +67,16 @@ export interface ImageContentData {
   mimeType: string;
 }
 
+export type UntrustedPageContentSource =
+  | 'extracted page content'
+  | 'page-derived error message'
+  | 'page-derived selector data'
+  | 'workflow metadata';
+
 export interface SnapshotParams {
   verbose?: boolean;
   filePath?: string;
+  overwrite?: boolean;
 }
 
 export interface LighthouseData {
@@ -99,6 +107,11 @@ export interface DevToolsData {
 
 export interface Response {
   appendResponseLine(value: string): void;
+  appendUntrustedPageContent(
+    value: string,
+    source: UntrustedPageContentSource,
+  ): void;
+  setStructuredContent?(value: Record<string, unknown>): void;
   setIncludePages(value: boolean): void;
   setIncludeNetworkRequests(
     value: boolean,
@@ -172,6 +185,7 @@ export type Context = Readonly<{
   saveFile(
     data: Uint8Array<ArrayBufferLike>,
     filename: string,
+    options?: SaveFileOptions,
   ): Promise<{filename: string}>;
   waitForTextOnPage(
     text: string[],

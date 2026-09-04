@@ -36,7 +36,14 @@ export const commands: Commands = {
         name: 'filePath',
         type: 'string',
         description:
-          'The absolute path, or a path relative to the current working directory, to save the snapshot to instead of attaching it to the response.',
+          'A file name or relative path within the controlled output directory to save the snapshot to instead of attaching it to the response.',
+        required: false,
+      },
+      overwrite: {
+        name: 'overwrite',
+        type: 'boolean',
+        description:
+          'Whether to replace an existing file at filePath. Default is false.',
         required: false,
       },
     },
@@ -48,7 +55,8 @@ export const commands: Commands = {
       uid: {
         name: 'uid',
         type: 'string',
-        description: 'The uid of an element on the page from the page content snapshot',
+        description:
+          'The uid of an element on the page from the page content snapshot',
         required: true,
       },
     },
@@ -60,7 +68,8 @@ export const commands: Commands = {
       uid: {
         name: 'uid',
         type: 'string',
-        description: 'The uid of an element on the page from the page content snapshot. If not provided, types into the currently focused element.',
+        description:
+          'The uid of an element on the page from the page content snapshot. If not provided, types into the currently focused element.',
         required: false,
       },
       text: {
@@ -156,7 +165,8 @@ export const commands: Commands = {
       title: {
         name: 'title',
         type: 'string',
-        description: 'Optional title for the duplicated workflow. Defaults to "Copy of <original title>".',
+        description:
+          'Optional title for the duplicated workflow. Defaults to "Copy of <original title>".',
         required: false,
       },
     },
@@ -182,24 +192,39 @@ export const commands: Commands = {
         type: 'string',
         description: 'The new action type for this step',
         required: false,
-        enum: ['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow'],
+        enum: [
+          'click',
+          'choice_click',
+          'type',
+          'wait',
+          'scroll',
+          'nav',
+          'hover',
+          'extract',
+          'screenshot',
+          'upload_image',
+          'run_workflow',
+        ],
       },
       uid: {
         name: 'uid',
         type: 'string',
-        description: 'The uid of an element on the page from the page content snapshot. Required when updating to an element-based action or when refreshing selectors.',
+        description:
+          'The uid of an element on the page from the page content snapshot. Required when updating to an element-based action or when refreshing selectors.',
         required: false,
       },
       choices: {
         name: 'choices',
         type: 'string',
-        description: 'For choice_click actions, a JSON object mapping choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.',
+        description:
+          'For choice_click actions, a JSON object mapping choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.',
         required: false,
       },
       action_value: {
         name: 'action_value',
         type: 'string',
-        description: 'The new value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)',
+        description:
+          'The new value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)',
         required: false,
       },
       step_description: {
@@ -241,25 +266,109 @@ export const commands: Commands = {
     },
   },
   list_workflows: {
-    description: 'List workflows, optionally filtered by website URL',
+    description:
+      'List workflows with filters, pagination, sorting, and optional step details',
     category: 'Workflow management',
     args: {
       website_url: {
         name: 'website_url',
         type: 'string',
-        description: 'Optional website URL to filter workflows by. Matches the stored workflow website_url value.',
+        description:
+          'Optional website URL to filter workflows by. Matches the stored workflow website_url value.',
         required: false,
+      },
+      website_url_match: {
+        name: 'website_url_match',
+        type: 'string',
+        description: 'How to match website_url: exact (default) or hostname.',
+        required: false,
+        enum: ['exact', 'hostname'],
+      },
+      status: {
+        name: 'status',
+        type: 'string',
+        description: 'Optional exact workflow status filter.',
+        required: false,
+      },
+      title_contains: {
+        name: 'title_contains',
+        type: 'string',
+        description:
+          'Optional case-insensitive substring filter for workflow titles.',
+        required: false,
+      },
+      action: {
+        name: 'action',
+        type: 'string',
+        description:
+          'Optional action filter; returns workflows containing that action.',
+        required: false,
+        enum: [
+          'click',
+          'choice_click',
+          'type',
+          'wait',
+          'scroll',
+          'nav',
+          'hover',
+          'extract',
+          'screenshot',
+          'upload_image',
+          'run_workflow',
+        ],
       },
       show_steps: {
         name: 'show_steps',
         type: 'boolean',
-        description: 'Whether to include workflow steps in the listing. Default is false.',
+        description:
+          'Whether to include workflow steps in the listing. Default is false.',
         required: false,
+      },
+      show_selector_strategies: {
+        name: 'show_selector_strategies',
+        type: 'boolean',
+        description:
+          'Include every selector strategy, frame selector, and target signature. Implies show_steps.',
+        required: false,
+      },
+      limit: {
+        name: 'limit',
+        type: 'number',
+        description: 'Maximum number of workflows to return.',
+        required: false,
+      },
+      offset: {
+        name: 'offset',
+        type: 'number',
+        description:
+          'Number of workflows to skip before returning results. Default is 0.',
+        required: false,
+      },
+      max_steps: {
+        name: 'max_steps',
+        type: 'number',
+        description:
+          'Maximum number of steps to show per workflow when details are enabled.',
+        required: false,
+      },
+      sort_by: {
+        name: 'sort_by',
+        type: 'string',
+        description: 'Workflow field used for sorting. Default is created_at.',
+        required: false,
+        enum: ['created_at', 'title', 'status', 'website_url', 'id'],
+      },
+      sort_order: {
+        name: 'sort_order',
+        type: 'string',
+        description: 'Sort direction. Default is desc.',
+        required: false,
+        enum: ['asc', 'desc'],
       },
     },
   },
   add_workflow_step: {
-    description: 'Add or insert a step into a workflow',
+    description: 'Add or insert a new step into a workflow',
     category: 'Workflow steps',
     args: {
       workflow_id: {
@@ -273,24 +382,39 @@ export const commands: Commands = {
         type: 'string',
         description: 'The action type for this step',
         required: true,
-        enum: ['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow'],
+        enum: [
+          'click',
+          'choice_click',
+          'type',
+          'wait',
+          'scroll',
+          'nav',
+          'hover',
+          'extract',
+          'screenshot',
+          'upload_image',
+          'run_workflow',
+        ],
       },
       uid: {
         name: 'uid',
         type: 'string',
-        description: 'The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll actions.',
+        description:
+          'The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll actions.',
         required: false,
       },
       choices: {
         name: 'choices',
         type: 'string',
-        description: 'For choice_click actions, a JSON object mapping choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.',
+        description:
+          'For choice_click actions, a JSON object mapping choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.',
         required: false,
       },
       action_value: {
         name: 'action_value',
         type: 'string',
-        description: 'Value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)',
+        description:
+          'Value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)',
         required: false,
       },
       step_description: {
@@ -302,13 +426,15 @@ export const commands: Commands = {
       step_order: {
         name: 'step_order',
         type: 'number',
-        description: 'The order of this step. If not provided, will be set to last + 1. If exists, will update.',
+        description:
+          'The order of this new step. If not provided, it will be set to last + 1. Fails if already in use; use update_workflow_step to modify an existing step.',
         required: false,
       },
       insert_at: {
         name: 'insert_at',
         type: 'number',
-        description: 'Insert a new step at this order and shift this and all later steps forward. Cannot be used with step_order.',
+        description:
+          'Insert a new step at this order and shift this and all later steps forward. Cannot be used with step_order.',
         required: false,
       },
     },
@@ -332,7 +458,8 @@ export const commands: Commands = {
       variables: {
         name: 'variables',
         type: 'string',
-        description: 'Key-value pairs to resolve {{variable_name}} placeholders in action_value fields. Example: {"username": "john", "password": "secret"}',
+        description:
+          'Key-value pairs to resolve {{variable_name}} placeholders in action_value fields. Example: {"username": "john", "password": "secret"}',
         required: false,
       },
     },
@@ -368,7 +495,8 @@ export const commands: Commands = {
       format: {
         name: 'format',
         type: 'string',
-        description: 'Type of format to save the screenshot as. Default is "png"',
+        description:
+          'Type of format to save the screenshot as. Default is "png"',
         required: false,
         enum: ['png', 'jpeg', 'webp'],
         default: 'png',
@@ -376,25 +504,36 @@ export const commands: Commands = {
       quality: {
         name: 'quality',
         type: 'number',
-        description: 'Compression quality for JPEG and WebP formats (0-100). Higher values mean better quality but larger file sizes. Ignored for PNG format.',
+        description:
+          'Compression quality for JPEG and WebP formats (0-100). Higher values mean better quality but larger file sizes. Ignored for PNG format.',
         required: false,
       },
       uid: {
         name: 'uid',
         type: 'string',
-        description: 'The uid of an element on the page from the page content snapshot. If omitted, takes a page screenshot.',
+        description:
+          'The uid of an element on the page from the page content snapshot. If omitted, takes a page screenshot.',
         required: false,
       },
       fullPage: {
         name: 'fullPage',
         type: 'boolean',
-        description: 'If set to true takes a screenshot of the full page instead of the currently visible viewport. Incompatible with uid.',
+        description:
+          'If set to true takes a screenshot of the full page instead of the currently visible viewport. Incompatible with uid.',
         required: false,
       },
       filePath: {
         name: 'filePath',
         type: 'string',
-        description: 'The absolute path, or a path relative to the current working directory, to save the screenshot to instead of attaching it to the response.',
+        description:
+          'A file name or relative path within the controlled output directory to save the screenshot to instead of attaching it to the response.',
+        required: false,
+      },
+      overwrite: {
+        name: 'overwrite',
+        type: 'boolean',
+        description:
+          'Whether to replace an existing file at filePath. Default is false.',
         required: false,
       },
     },

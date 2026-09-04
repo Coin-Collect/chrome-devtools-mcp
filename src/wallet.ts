@@ -1,4 +1,3 @@
-
 /**
  * @license
  * Copyright 2026 Google LLC
@@ -16,7 +15,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { ethers } from 'ethers';
+import {ethers} from 'ethers';
+
+import {checkNavigationSecurity} from './utils/security.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,11 +29,12 @@ interface WalletConfig {
 }
 
 interface WalletPage {
+  url(): string;
     evaluateOnNewDocument(
         fn: (address: string, chainId: string) => void,
         address: string,
         chainId: string,
-    ): Promise<{ identifier: string }>;
+  ): Promise<{identifier: string}>;
     evaluate(
         fn: (address: string, chainId: string) => void,
         address: string,
@@ -40,7 +42,7 @@ interface WalletPage {
     ): Promise<unknown>;
     exposeFunction(
         name: string,
-        fn: (msg: string) => Promise<string>,
+    fn: ((msg: string) => Promise<string>) | (() => Promise<void>),
     ): Promise<void>;
 }
 
@@ -50,6 +52,7 @@ interface WalletPage {
 
 declare global {
     interface Window {
+    __rockstar_check_wallet_access?: () => Promise<void>;
         __rockstar_personal_sign?: (msg: string) => Promise<string>;
         __rockstar_sign_typed_data?: (msg: string) => Promise<string>;
     }
@@ -60,6 +63,25 @@ declare global {
 // ---------------------------------------------------------------------------
 
 const POLYGON_CHAIN_ID = '0x89';
+
+export function createWalletWhitelistGuard(
+  page: {url(): string},
+  checkSecurity: (url: string) => Promise<void> = checkNavigationSecurity,
+): () => Promise<void> {
+  return async () => {
+    await checkSecurity(page.url());
+  };
+}
+
+export function createAuthorizedWalletSigner<T>(
+  requireWalletAccess: () => Promise<void>,
+  sign: (value: T) => Promise<string>,
+): (value: T) => Promise<string> {
+  return async (value: T): Promise<string> => {
+    await requireWalletAccess();
+    return await sign(value);
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Wallet config loader
@@ -89,7 +111,7 @@ function loadWalletConfig(): WalletConfig {
         throw new Error('Invalid wallet.json: missing or invalid privateKey');
     }
 
-    return { address: parsed.address, privateKey: parsed.privateKey };
+  return {address: parsed.address, privateKey: parsed.privateKey};
 }
 
 // ---------------------------------------------------------------------------
@@ -136,11 +158,24 @@ function createTypedDataSigner(privateKey: string) {
         // Build a type-safe domain object
         const domain: ethers.TypedDataDomain = {};
         if (typeof rawDomain === 'object' && rawDomain !== null) {
-            if ('name' in rawDomain && typeof rawDomain.name === 'string') domain.name = rawDomain.name;
-            if ('version' in rawDomain && typeof rawDomain.version === 'string') domain.version = rawDomain.version;
-            if ('chainId' in rawDomain && (typeof rawDomain.chainId === 'string' || typeof rawDomain.chainId === 'number' || typeof rawDomain.chainId === 'bigint')) domain.chainId = rawDomain.chainId;
-            if ('verifyingContract' in rawDomain && typeof rawDomain.verifyingContract === 'string') domain.verifyingContract = rawDomain.verifyingContract;
-            if ('salt' in rawDomain && typeof rawDomain.salt === 'string') domain.salt = rawDomain.salt;
+      if ('name' in rawDomain && typeof rawDomain.name === 'string')
+        domain.name = rawDomain.name;
+      if ('version' in rawDomain && typeof rawDomain.version === 'string')
+        domain.version = rawDomain.version;
+      if (
+        'chainId' in rawDomain &&
+        (typeof rawDomain.chainId === 'string' ||
+          typeof rawDomain.chainId === 'number' ||
+          typeof rawDomain.chainId === 'bigint')
+      )
+        domain.chainId = rawDomain.chainId;
+      if (
+        'verifyingContract' in rawDomain &&
+        typeof rawDomain.verifyingContract === 'string'
+      )
+        domain.verifyingContract = rawDomain.verifyingContract;
+      if ('salt' in rawDomain && typeof rawDomain.salt === 'string')
+        domain.salt = rawDomain.salt;
         }
 
         // Build a type-safe message record
@@ -150,7 +185,10 @@ function createTypedDataSigner(privateKey: string) {
         }
 
         // Build a clean types map without EIP712Domain (ethers handles it)
-        const signingTypes: Record<string, Array<{ name: string; type: string }>> = {};
+    const signingTypes: Record<
+      string,
+      Array<{name: string; type: string}>
+    > = {};
         for (const [key, value] of Object.entries(rawTypes)) {
             if (key === 'EIP712Domain') continue;
             if (!Array.isArray(value)) continue;
@@ -168,11 +206,7 @@ function createTypedDataSigner(privateKey: string) {
             });
         }
 
-        return wallet.signTypedData(
-            domain,
-            signingTypes,
-            message,
-        );
+    return wallet.signTypedData(domain, signingTypes, message);
     };
 }
 
@@ -195,6 +229,14 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
     type JsonRpcCallback = (err: unknown, result?: unknown) => void;
     const listeners: Record<string, Listener[]> = {};
     let connected = false;
+
+  async function requireWalletAccess(): Promise<void> {
+    const checkAccess = window.__rockstar_check_wallet_access;
+    if (!checkAccess) {
+      throw new Error('Wallet whitelist bridge not available');
+    }
+    await checkAccess();
+  }
 
     function emit(event: string, data: unknown): void {
         const fns = listeners[event];
@@ -248,7 +290,7 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
         removeListener(event: string, listener: Listener) {
             const arr = listeners[event];
             if (arr) {
-                listeners[event] = arr.filter((l) => l !== listener);
+        listeners[event] = arr.filter(l => l !== listener);
             }
             return provider;
         },
@@ -277,20 +319,24 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
         },
 
         // ---------- EIP-1193 request ----------
-        async request(args: { method: string; params?: unknown[] | Record<string, unknown> }): Promise<unknown> {
-            const { method, params } = args;
+    async request(args: {
+      method: string;
+      params?: unknown[] | Record<string, unknown>;
+    }): Promise<unknown> {
+      const {method, params} = args;
             const p: unknown[] = Array.isArray(params) ? params : [];
 
             switch (method) {
                 // ---- Account access ----
                 case 'eth_requestAccounts':
                 case 'eth_accounts': {
+          await requireWalletAccess();
                     if (!connected) {
                         connected = true;
                         provider.selectedAddress = walletAddress;
                         provider._state.accounts = [walletAddress];
                         provider._state.isConnected = true;
-                        emit('connect', { chainId });
+            emit('connect', {chainId});
                         emit('accountsChanged', [walletAddress]);
                     }
                     return [walletAddress];
@@ -317,7 +363,7 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                     ) {
                         throw Object.assign(
                             new Error('Only Polygon network is supported'),
-                            { code: 4902 },
+              {code: 4902},
                         );
                     }
                     return null;
@@ -327,17 +373,23 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                     return null;
 
                 // ---- Permissions ----
-                case 'wallet_requestPermissions':
-                    return [{ parentCapability: 'eth_accounts' }];
+        case 'wallet_requestPermissions': {
+          await requireWalletAccess();
+          return [{parentCapability: 'eth_accounts'}];
+        }
 
-                case 'wallet_getPermissions':
-                    return [{ parentCapability: 'eth_accounts' }];
+        case 'wallet_getPermissions': {
+          await requireWalletAccess();
+          return [{parentCapability: 'eth_accounts'}];
+        }
 
                 case 'web3_clientVersion':
                     return 'MetaMask/v11.0.0';
 
-                case 'eth_coinbase':
+        case 'eth_coinbase': {
+          await requireWalletAccess();
                     return walletAddress;
+        }
 
                 // ---- Signing (bridged to Node.js) ----
                 case 'personal_sign': {
@@ -367,14 +419,14 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
 
                 // ---- Legacy enable ----
                 case 'enable':
-                    return provider.request({ method: 'eth_requestAccounts' });
+          return provider.request({method: 'eth_requestAccounts'});
 
                 // ---- Unimplemented methods ----
                 default: {
                     alert(`Rockstar Wallet: Method "${method}" is not yet implemented.`);
                     throw Object.assign(
                         new Error(`Method "${method}" is not supported`),
-                        { code: 4200 },
+            {code: 4200},
                     );
                 }
             }
@@ -382,7 +434,7 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
 
         // ---------- Legacy methods ----------
         enable() {
-            return provider.request({ method: 'eth_requestAccounts' });
+      return provider.request({method: 'eth_requestAccounts'});
         },
 
         send(methodOrPayload: string | JsonRpcPayload, callbackOrParams?: unknown) {
@@ -398,33 +450,30 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
             });
             if (typeof callbackOrParams === 'function') {
                 responsePromise
-                    .then((result) =>
+          .then(result =>
                         (callbackOrParams as JsonRpcCallback)(null, {
                             id: methodOrPayload.id,
                             jsonrpc: methodOrPayload.jsonrpc || '2.0',
                             result,
                         }),
                     )
-                    .catch((error) => (callbackOrParams as JsonRpcCallback)(error));
+          .catch(error => (callbackOrParams as JsonRpcCallback)(error));
                 return;
             }
             return responsePromise;
         },
 
-        sendAsync(
-            payload: JsonRpcPayload,
-            callback: JsonRpcCallback,
-        ) {
+    sendAsync(payload: JsonRpcPayload, callback: JsonRpcCallback) {
             provider
-                .request({ method: payload.method, params: payload.params })
-                .then((result) =>
+        .request({method: payload.method, params: payload.params})
+        .then(result =>
                     callback(null, {
                         id: payload.id,
                         jsonrpc: payload.jsonrpc || '2.0',
                         result,
                     }),
                 )
-                .catch((error) => callback(error));
+        .catch(error => callback(error));
         },
     };
 
@@ -456,7 +505,8 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
 
     // Announce the provider (legacy initialization event + EIP-6963).
     window.dispatchEvent(new Event('ethereum#initialized'));
-    window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
+  window.dispatchEvent(
+    new CustomEvent('eip6963:announceProvider', {
         detail: {
             info: {
                 uuid: '350670db-19fa-4704-a166-e52e178b59d2',
@@ -466,9 +516,11 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
             },
             provider,
         },
-    }));
+    }),
+  );
     window.addEventListener('eip6963:requestProvider', () => {
-        window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
+    window.dispatchEvent(
+      new CustomEvent('eip6963:announceProvider', {
             detail: {
                 info: {
                     uuid: '350670db-19fa-4704-a166-e52e178b59d2',
@@ -478,7 +530,8 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                 },
                 provider,
             },
-        }));
+      }),
+    );
     });
 }
 /* eslint-enable @typescript-eslint/no-unused-vars */
@@ -512,23 +565,34 @@ function getWalletConfig(): WalletConfig {
  */
 export async function injectEthereumProvider(page: WalletPage): Promise<void> {
     const config = getWalletConfig();
+  const requireWalletAccess = createWalletWhitelistGuard(page);
 
-    // 1. Expose signing bridges FIRST so they're available when the
-    //    provider script runs on page load.
     try {
         await page.exposeFunction(
-            '__rockstar_personal_sign',
+      '__rockstar_check_wallet_access',
+      requireWalletAccess,
+    );
+  } catch {
+    // Already exposed (e.g. after navigation within same page)
+  }
+
+  // Expose signing bridges before the provider script runs on page load.
+  try {
+    const signPersonalMessage = createAuthorizedWalletSigner(
+      requireWalletAccess,
             createPersonalSigner(config.privateKey),
         );
+    await page.exposeFunction('__rockstar_personal_sign', signPersonalMessage);
     } catch {
         // Already exposed (e.g. after navigation within same page)
     }
 
     try {
-        await page.exposeFunction(
-            '__rockstar_sign_typed_data',
+    const signTypedData = createAuthorizedWalletSigner(
+      requireWalletAccess,
             createTypedDataSigner(config.privateKey),
         );
+    await page.exposeFunction('__rockstar_sign_typed_data', signTypedData);
     } catch {
         // Already exposed
     }

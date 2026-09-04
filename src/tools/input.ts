@@ -20,10 +20,12 @@ interface WithUploadFile {
 }
 
 function asUploadFile(handle: ElementHandle): WithUploadFile | null {
-  const h = handle as ElementHandle & { uploadFile?: (...filePaths: string[]) => Promise<void> };
+  const h = handle as ElementHandle & {
+    uploadFile?: (...filePaths: string[]) => Promise<void>;
+  };
   if (typeof h.uploadFile !== 'function') return null;
   const fn: (...filePaths: string[]) => Promise<void> = h.uploadFile;
-  return { uploadFile: (...args) => fn.apply(h, args) };
+  return {uploadFile: (...args) => fn.apply(h, args)};
 }
 
 const dblClickSchema = zod
@@ -455,7 +457,8 @@ export const pressKey = definePageTool({
 
 export const uploadFileFromUrl = definePageTool({
   name: 'upload_file_from_url',
-  description: 'Downloads a file from the provided URL and uploads it through an element. Unless otherwise specified, this tool should be used instead of upload_file.',
+  description:
+    'Downloads a file from the provided URL and uploads it through an element. Unless otherwise specified, this tool should be used instead of upload_file.',
   annotations: {
     category: ToolCategory.INPUT,
     readOnlyHint: false,
@@ -475,7 +478,9 @@ export const uploadFileFromUrl = definePageTool({
     // Download the image
     const imageResponse = await fetch(url);
     if (!imageResponse.ok) {
-      throw new Error(`Failed to download file from ${url}: ${imageResponse.statusText}`);
+      throw new Error(
+        `Failed to download file from ${url}: ${imageResponse.statusText}`,
+      );
     }
     const arrayBuffer = await imageResponse.arrayBuffer();
     const uint8Array = new Uint8Array(arrayBuffer);
@@ -488,7 +493,10 @@ export const uploadFileFromUrl = definePageTool({
     if (contentType.includes('webp')) mimeType = 'image/webp';
 
     const mcpContext = context as McpContext;
-    const {filepath: filePath} = await mcpContext.saveTemporaryFile(uint8Array, mimeType);
+    const {filepath: filePath} = await mcpContext.saveTemporaryFile(
+      uint8Array,
+      `upload.${mimeType.split('/')[1]}`,
+    );
 
     const handle = (await request.page.getElementByUid(
       uid,
@@ -519,7 +527,9 @@ export const uploadFileFromUrl = definePageTool({
       if (request.params.includeSnapshot) {
         response.includeSnapshot();
       }
-      response.appendResponseLine(`File uploaded from ${url} (via ${filePath}).`);
+      response.appendResponseLine(
+        `File uploaded from ${url} (via ${filePath}).`,
+      );
     } finally {
       void handle.dispose();
     }

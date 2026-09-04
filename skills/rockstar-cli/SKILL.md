@@ -46,6 +46,10 @@ rockstar take_screenshot --uid "1_3" --filePath "el.png"  # Screenshot a specifi
 rockstar take_screenshot --format jpeg --quality 80  # Take a JPEG screenshot with custom quality
 ```
 
+When `--filePath` is used, Rockstar writes only below `<cwd>/output/`. Pass a
+relative file name such as `snapshot.txt` or `captures/login.png`; existing
+files are retained unless `--overwrite true` is supplied.
+
 ## Human-Like Input Automation (<uid> from snapshot)
 
 ```bash
@@ -57,6 +61,7 @@ rockstar drag_like_human "from_uid" "to_uid"        # Drag an element onto anoth
 ```
 
 These tools simulate natural human behavior including:
+
 - Bezier curve mouse movements
 - Natural scroll-into-view with mouse wheel momentum
 - Hover dwell before clicking
@@ -79,12 +84,19 @@ rockstar delete_workflow 1                                                  # De
 rockstar list_workflows                                                      # List workflows without steps
 rockstar list_workflows --show_steps                                          # List workflows with steps
 rockstar list_workflows --website_url "https://app.example.com"             # Filter by website URL
+rockstar list_workflows --website_url "app.example.com" --website_url_match hostname  # Match normalized hostname
+rockstar list_workflows --status "draft" --title_contains "Login"           # Filter by status and title
+rockstar list_workflows --action click --limit 20 --offset 0                  # Filter by action and paginate
+rockstar list_workflows --show_steps --max_steps 10                           # Limit steps shown per workflow
+rockstar list_workflows --show_steps --show_selector_strategies               # Include all selector strategies and target signatures
+rockstar list_workflows --sort_by title --sort_order asc                      # Sort results by title
+rockstar list_workflows --output-format json                                  # Return structured JSON output
 rockstar update_workflow_step 1 3 --step_description "Click the primary CTA" # Update a single step
 rockstar update_workflow_step 1 3 --action_value "{{plan}}"                 # Update one field on a step
 rockstar delete_workflow_step 1 3                                           # Delete step 3 and reorder later steps
 ```
 
-When `--show_steps` is enabled, `choice_click` steps also list their available choice keys.
+`list_workflows` reads workflow data directly and does not start the daemon. When `--show_steps` is enabled, each step includes its action value, description, selector, and selector strategy count. `choice_click` steps also list their available choice keys. Add `--show_selector_strategies` to include every strategy, iframe selector, and target signature. JSON output contains `workflows`, `total`, `summary`, `filters`, and pagination fields.
 
 ### Adding Steps to a Workflow
 
@@ -101,12 +113,17 @@ rockstar add_workflow_step 1 scroll --uid "1_9" --action_value "300"         # A
 rockstar add_workflow_step 1 upload_image --uid "1_10" --action_value "https://example.com/img.png"  # Upload an image
 rockstar add_workflow_step 1 run_workflow --action_value "2"                 # Run workflow 2 as a step
 rockstar add_workflow_step 1 run_workflow --action_value "{{child_workflow_id}}"  # Select the nested workflow at runtime
-rockstar add_workflow_step 1 click --uid "1_5" --step_order 3               # Update an existing step by order
+rockstar update_workflow_step 1 3 --uid "1_5"                              # Update an existing step by order
+rockstar add_workflow_step 1 click --uid "1_5" --step_order 3               # Add at an exact unused order; fails if occupied
 rockstar add_workflow_step 1 click --uid "1_5" --insert_at 3                # Insert as step 3 and shift later steps forward
 rockstar add_workflow_step 1 type --uid "1_6" --action_value "text" --step_description "Enter username"  # Add with description
 ```
 
+`add_workflow_step` only adds new steps. Use `update_workflow_step` to modify an existing step; use `--insert_at` to add before an existing step and shift later steps. `--step_order` and `--insert_at` cannot be used together.
+
 Supported actions: `click`, `choice_click`, `type`, `wait`, `scroll`, `nav`, `hover`, `extract`, `screenshot`, `upload_image`, `run_workflow`
+
+`upload_image` accepts only HTTPS images from domains in `~/rockstarx/whitelist.json`; redirect targets must also be allowlisted. PNG, JPEG, WebP, and GIF files up to 10 MB are supported.
 
 ### Running & Simulating Workflows
 

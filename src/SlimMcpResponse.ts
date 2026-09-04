@@ -24,9 +24,20 @@ export class SlimMcpResponse extends McpResponse {
       type: 'text',
       text: this.responseLines.join('\n'),
     };
+    const customStructuredContent = this.customStructuredContent;
+    const pageContentTrust = this.pageContentTrust;
     return {
       content: [text],
-      structuredContent: text,
+      structuredContent:
+        Object.keys(customStructuredContent).length > 0
+          ? {
+              ...customStructuredContent,
+              ...(pageContentTrust ? {pageContentTrust} : {}),
+              message: text.text,
+            }
+          : pageContentTrust
+            ? {pageContentTrust, message: text.text}
+            : text,
     };
   }
 }

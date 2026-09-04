@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import {spawn} from 'node:child_process';
 import fs from 'node:fs';
 import {createServer, type Server} from 'node:net';
 import path from 'node:path';
@@ -19,6 +20,8 @@ import {
 } from '../third_party/index.js';
 import {VERSION} from '../version.js';
 
+import {getUptimeSeconds, redactDaemonArgs} from './status.js';
+import {parseDaemonMessage} from './protocol.js';
 import type {DaemonMessage} from './types.js';
 import {
   DAEMON_CLIENT_NAME,
@@ -52,8 +55,10 @@ let mcpTransport: StdioClientTransport | null = null;
 let server: Server | null = null;
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const IDLE_SHUTDOWN_WARNING_MS = 5_000;
 const MAX_REQUEST_TIMEOUT_MS = 2_147_483_647;
 let idleTimeout: NodeJS.Timeout | null = null;
+let idleWarningTimeout: NodeJS.Timeout | null = null;
 let activeRequestCount = 0;
 
 function clearIdleTimeout() {
@@ -61,10 +66,71 @@ function clearIdleTimeout() {
     clearTimeout(idleTimeout);
     idleTimeout = null;
   }
+  if (idleWarningTimeout) {
+    clearTimeout(idleWarningTimeout);
+    idleWarningTimeout = null;
+  }
+}
+
+function playIdleShutdownWarning(): void {
+  let command: string;
+  let args: string[];
+
+  if (IS_WINDOWS) {
+    command = 'powershell.exe';
+    args = [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '[Console]::Beep(880, 300)',
+    ];
+  } else if (process.platform === 'darwin') {
+    command = 'afplay';
+    args = ['/System/Library/Sounds/Glass.aiff'];
+  } else {
+    command = 'sh';
+    args = [
+      '-c',
+      [
+        'if command -v paplay >/dev/null 2>&1 && [ -f /usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga ]; then',
+        '  paplay /usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga;',
+        'elif command -v aplay >/dev/null 2>&1 && [ -f /usr/share/sounds/alsa/Front_Left.wav ]; then',
+        '  aplay -q /usr/share/sounds/alsa/Front_Left.wav;',
+        'elif command -v beep >/dev/null 2>&1; then',
+        '  beep -f 880 -l 300;',
+        'fi',
+      ].join(' '),
+    ];
+  }
+
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.on('error', error => {
+      logger('Unable to play idle shutdown warning:', error);
+    });
+    child.unref();
+  } catch (error) {
+    // Audio is best-effort and must never prevent daemon shutdown.
+    logger('Unable to start idle shutdown warning:', error);
+  }
+}
+
+function warnBeforeIdleShutdown(): void {
+  logger('Daemon will shut down in 5 seconds due to inactivity.');
+  console.log('Daemon will shut down in 5 seconds due to inactivity.');
+  playIdleShutdownWarning();
 }
 
 function resetIdleTimeout() {
   clearIdleTimeout();
+  idleWarningTimeout = setTimeout(
+    warnBeforeIdleShutdown,
+    IDLE_TIMEOUT_MS - IDLE_SHUTDOWN_WARNING_MS,
+  );
   idleTimeout = setTimeout(() => {
     logger('Idle timeout reached. Shutting down daemon.');
     console.log('Daemon shutting down due to inactivity.');
@@ -149,14 +215,36 @@ async function handleRequest(msg: DaemonMessage) {
         message: 'stopping',
       };
     } else if (msg.method === 'status') {
+      await started;
+
+      let mcpConnected = false;
+      if (mcpClient) {
+        try {
+          await mcpClient.ping({timeout: 2_000});
+          mcpConnected = true;
+        } catch (error) {
+          logger('MCP health check failed:', error);
+        }
+      }
+
+      const daemonReady = server?.listening === true;
       return {
         success: true,
         result: JSON.stringify({
+          running: true,
+          healthy: daemonReady && mcpConnected,
           pid: process.pid,
           socketPath,
           startDate: startDate.toISOString(),
+          uptimeSeconds: getUptimeSeconds(startDate.toISOString()),
           version: VERSION,
-          args: mcpServerArgs,
+          args: redactDaemonArgs(mcpServerArgs),
+          health: {
+            daemonReady,
+            mcpConnected,
+            // Browser initialization is lazy and is not triggered by status.
+            browserConnected: null,
+          },
         }),
       };
     }
@@ -195,7 +283,17 @@ async function startSocketServer() {
       const transport = new PipeTransport(socket, socket);
       transport.onmessage = async (message: string) => {
         logger('onmessage', message);
-        const response = await handleRequest(JSON.parse(message));
+        let response;
+        try {
+          response = await handleRequest(parseDaemonMessage(message));
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Invalid daemon request.';
+          response = {
+            success: false,
+            error: errorMessage,
+          };
+        }
         transport.send(JSON.stringify(response));
         socket.end();
       };
