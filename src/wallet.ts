@@ -11,9 +11,10 @@
  * Currently configured for Polygon network (chainId: 0x89).
  */
 
+import {randomBytes} from 'node:crypto';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
 
 import {ethers} from 'ethers';
 
@@ -31,18 +32,20 @@ interface WalletConfig {
 interface WalletPage {
   url(): string;
     evaluateOnNewDocument(
-        fn: (address: string, chainId: string) => void,
+        fn: (address: string, chainId: string, accessToken: string) => void,
         address: string,
         chainId: string,
+        accessToken: string,
   ): Promise<{identifier: string}>;
     evaluate(
-        fn: (address: string, chainId: string) => void,
+        fn: (address: string, chainId: string, accessToken: string) => void,
         address: string,
         chainId: string,
+        accessToken: string,
     ): Promise<unknown>;
     exposeFunction(
         name: string,
-    fn: ((msg: string) => Promise<string>) | (() => Promise<void>),
+    fn: (...args: unknown[]) => Promise<unknown>,
     ): Promise<void>;
 }
 
@@ -52,9 +55,20 @@ interface WalletPage {
 
 declare global {
     interface Window {
-    __rockstar_check_wallet_access?: () => Promise<void>;
-        __rockstar_personal_sign?: (msg: string) => Promise<string>;
-        __rockstar_sign_typed_data?: (msg: string) => Promise<string>;
+    __rockstar_check_wallet_access?: (
+      accessToken: string,
+      frameOrigin: string,
+    ) => Promise<void>;
+        __rockstar_personal_sign?: (
+          accessToken: string,
+          frameOrigin: string,
+          msg: string,
+        ) => Promise<string>;
+        __rockstar_sign_typed_data?: (
+          accessToken: string,
+          frameOrigin: string,
+          msg: string,
+        ) => Promise<string>;
     }
 }
 
@@ -63,6 +77,7 @@ declare global {
 // ---------------------------------------------------------------------------
 
 const POLYGON_CHAIN_ID = '0x89';
+const walletAccessTokens = new WeakMap<object, string>();
 
 export function createWalletWhitelistGuard(
   page: {url(): string},
@@ -70,6 +85,32 @@ export function createWalletWhitelistGuard(
 ): () => Promise<void> {
   return async () => {
     await checkSecurity(page.url());
+  };
+}
+
+export function createWalletFrameWhitelistGuard(
+  page: {url(): string},
+  accessToken: string,
+  checkSecurity: (url: string) => Promise<void> = checkNavigationSecurity,
+): (providedToken: string, frameOrigin: string) => Promise<void> {
+  return async (providedToken: string, frameOrigin: string) => {
+    if (providedToken !== accessToken) {
+      throw new Error('Security Violation: wallet bridge token is invalid.');
+    }
+
+    const pageUrl = page.url();
+    await checkSecurity(pageUrl);
+    let pageOrigin: string;
+    try {
+      pageOrigin = new URL(pageUrl).origin;
+    } catch {
+      throw new Error('Security Violation: wallet page origin is invalid.');
+    }
+    if (frameOrigin !== pageOrigin) {
+      throw new Error(
+        'Security Violation: wallet access from a different frame origin is not allowed.',
+      );
+    }
   };
 }
 
@@ -90,13 +131,49 @@ export function createAuthorizedWalletSigner<T>(
 function loadWalletConfig(): WalletConfig {
     const walletPath = path.join(os.homedir(), 'rockstarx', 'wallet.json');
 
-    if (!fs.existsSync(walletPath)) {
+    let walletStats: fs.Stats;
+    try {
+        walletStats = fs.lstatSync(walletPath);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            throw new Error(
+                `Wallet file not found at ${walletPath}. Run npm run build to generate one.`,
+            );
+        }
+        throw new Error(`Unable to inspect wallet file at ${walletPath}.`, {cause: error});
+    }
+
+    if (walletStats.isSymbolicLink() || !walletStats.isFile()) {
+        throw new Error(`Refusing to use unsafe wallet file at ${walletPath}.`);
+    }
+    if (process.platform !== 'win32' && (walletStats.mode & 0o077) !== 0) {
+        throw new Error(`Wallet file permissions are too broad: ${walletPath}.`);
+    }
+
+    const walletFileDescriptor = fs.openSync(
+        walletPath,
+        fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+    );
+    let content: string;
+    try {
+        const openedStats = fs.fstatSync(walletFileDescriptor);
+        if (
+            !openedStats.isFile() ||
+            (process.platform !== 'win32' && (openedStats.mode & 0o077) !== 0)
+        ) {
+            throw new Error(`Refusing to use unsafe wallet file at ${walletPath}.`);
+        }
+        content = fs.readFileSync(walletFileDescriptor, 'utf8');
+    } finally {
+        fs.closeSync(walletFileDescriptor);
+    }
+
+    if (!content) {
         throw new Error(
             `Wallet file not found at ${walletPath}. Run npm run build to generate one.`,
         );
     }
 
-    const content = fs.readFileSync(walletPath, 'utf-8');
     const parsed: unknown = JSON.parse(content);
 
     if (typeof parsed !== 'object' || parsed === null) {
@@ -215,7 +292,11 @@ function createTypedDataSigner(privateKey: string) {
 // ---------------------------------------------------------------------------
 
 /* eslint-disable @typescript-eslint/no-unused-vars */
-function ethereumProviderScript(walletAddress: string, chainId: string): void {
+function ethereumProviderScript(
+  walletAddress: string,
+  chainId: string,
+  accessToken: string,
+): void {
     // Guard: don't override an existing provider
     if ('ethereum' in window) return;
 
@@ -231,11 +312,25 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
     let connected = false;
 
   async function requireWalletAccess(): Promise<void> {
+    const topWindow = window.top;
+    if (topWindow === null || topWindow !== window) {
+      try {
+        if (topWindow === null || topWindow.location.origin !== window.location.origin) {
+          throw new Error(
+            'Wallet access from a different frame origin is not allowed',
+          );
+        }
+      } catch {
+        throw new Error(
+          'Wallet access from a different frame origin is not allowed',
+        );
+      }
+    }
     const checkAccess = window.__rockstar_check_wallet_access;
     if (!checkAccess) {
       throw new Error('Wallet whitelist bridge not available');
     }
-    await checkAccess();
+    await checkAccess(accessToken, window.location.origin);
   }
 
     function emit(event: string, data: unknown): void {
@@ -397,14 +492,14 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                     // __rockstar_personal_sign is exposed via Puppeteer exposeFunction
                     const sign = window.__rockstar_personal_sign;
                     if (!sign) throw new Error('Signing bridge not available');
-                    return sign(message);
+                    return sign(accessToken, window.location.origin, message);
                 }
 
                 case 'eth_sign': {
                     const message = String(p[1]);
                     const sign = window.__rockstar_personal_sign;
                     if (!sign) throw new Error('Signing bridge not available');
-                    return sign(message);
+                    return sign(accessToken, window.location.origin, message);
                 }
 
                 case 'eth_signTypedData':
@@ -414,7 +509,7 @@ function ethereumProviderScript(walletAddress: string, chainId: string): void {
                     const payload = typeof raw === 'string' ? raw : JSON.stringify(raw);
                     const signTyped = window.__rockstar_sign_typed_data;
                     if (!signTyped) throw new Error('Signing bridge not available');
-                    return signTyped(payload);
+                    return signTyped(accessToken, window.location.origin, payload);
                 }
 
                 // ---- Legacy enable ----
@@ -565,12 +660,22 @@ function getWalletConfig(): WalletConfig {
  */
 export async function injectEthereumProvider(page: WalletPage): Promise<void> {
     const config = getWalletConfig();
-  const requireWalletAccess = createWalletWhitelistGuard(page);
+  let accessToken = walletAccessTokens.get(page);
+  if (!accessToken) {
+    accessToken = randomBytes(32).toString('hex');
+    walletAccessTokens.set(page, accessToken);
+  }
+  const requireWalletAccess = createWalletFrameWhitelistGuard(page, accessToken);
 
     try {
         await page.exposeFunction(
       '__rockstar_check_wallet_access',
-      requireWalletAccess,
+      async (...args: unknown[]) => {
+        await requireWalletAccess(
+          typeof args[0] === 'string' ? args[0] : '',
+          typeof args[1] === 'string' ? args[1] : '',
+        );
+      },
     );
   } catch {
     // Already exposed (e.g. after navigation within same page)
@@ -578,20 +683,28 @@ export async function injectEthereumProvider(page: WalletPage): Promise<void> {
 
   // Expose signing bridges before the provider script runs on page load.
   try {
-    const signPersonalMessage = createAuthorizedWalletSigner(
-      requireWalletAccess,
-            createPersonalSigner(config.privateKey),
-        );
+    const signPersonalMessage = async (...args: unknown[]): Promise<string> => {
+      await requireWalletAccess(
+        typeof args[0] === 'string' ? args[0] : '',
+        typeof args[1] === 'string' ? args[1] : '',
+      );
+      return await createPersonalSigner(config.privateKey)(String(args[2] ?? ''));
+    };
     await page.exposeFunction('__rockstar_personal_sign', signPersonalMessage);
     } catch {
         // Already exposed (e.g. after navigation within same page)
     }
 
     try {
-    const signTypedData = createAuthorizedWalletSigner(
-      requireWalletAccess,
-            createTypedDataSigner(config.privateKey),
-        );
+    const signTypedData = async (...args: unknown[]): Promise<string> => {
+      await requireWalletAccess(
+        typeof args[0] === 'string' ? args[0] : '',
+        typeof args[1] === 'string' ? args[1] : '',
+      );
+      return await createTypedDataSigner(config.privateKey)(
+        String(args[2] ?? ''),
+      );
+    };
     await page.exposeFunction('__rockstar_sign_typed_data', signTypedData);
     } catch {
         // Already exposed
@@ -602,6 +715,7 @@ export async function injectEthereumProvider(page: WalletPage): Promise<void> {
         ethereumProviderScript,
         config.address,
         POLYGON_CHAIN_ID,
+        accessToken,
     );
 
     // 3. Popups can be discovered after their initial document exists.
@@ -611,6 +725,7 @@ export async function injectEthereumProvider(page: WalletPage): Promise<void> {
             ethereumProviderScript,
             config.address,
             POLYGON_CHAIN_ID,
+            accessToken,
         );
     } catch {
         // The page may be navigating or already closed. Future documents are

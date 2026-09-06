@@ -13,9 +13,11 @@ import type {CallToolResult} from '../third_party/index.js';
 import {PipeTransport} from '../third_party/index.js';
 import {saveTemporaryFile} from '../utils/files.js';
 
+import {redactDaemonArgs} from './status.js';
 import type {DaemonMessage, DaemonResponse} from './types.js';
 import {
   DAEMON_SCRIPT_PATH,
+  getDaemonTokenPath,
   getSocketPath,
   getPidFilePath,
   isDaemonRunning,
@@ -79,7 +81,7 @@ export async function startDaemon(mcpArgs: string[] = []) {
     fs.unlinkSync(pidFilePath);
   }
 
-  logger('Starting daemon...', ...mcpArgs);
+  logger('Starting daemon...', redactDaemonArgs(mcpArgs));
   const child = spawn(process.execPath, [DAEMON_SCRIPT_PATH, ...mcpArgs], {
     detached: true,
     stdio: 'ignore',
@@ -90,6 +92,7 @@ export async function startDaemon(mcpArgs: string[] = []) {
   child.unref();
 
   await waitForFile(pidFilePath);
+  await waitForFile(getDaemonTokenPath());
 }
 
 const DEFAULT_SEND_COMMAND_TIMEOUT = 60_000;
@@ -104,8 +107,31 @@ export async function sendCommand(
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
     throw new Error('Daemon response timeout must be a non-negative number');
   }
+  if (timeoutMs > 2_147_483_647) {
+    throw new Error('Daemon response timeout exceeds the supported limit');
+  }
 
   const socketPath = getSocketPath();
+  const tokenPath = getDaemonTokenPath();
+  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+  const tokenHandle = await fs.promises.open(
+    tokenPath,
+    fs.constants.O_RDONLY | noFollow,
+  );
+  let authToken: string;
+  try {
+    const tokenStats = await tokenHandle.stat();
+    if (!tokenStats.isFile()) {
+      throw new Error('Daemon authentication token is not a regular file');
+    }
+    authToken = (await tokenHandle.readFile({encoding: 'utf8'})).trim();
+  } finally {
+    await tokenHandle.close();
+  }
+  if (!/^[a-f0-9]{64}$/.test(authToken)) {
+    throw new Error('Daemon authentication token is invalid');
+  }
+  const authenticatedCommand = {...command, authToken};
 
   const socket = net.createConnection({
     path: socketPath,
@@ -129,7 +155,7 @@ export async function sendCommand(
       if (timer) {
         clearTimeout(timer);
       }
-      logger('onmessage', message);
+      logger('onmessage', {responseReceived: true});
       resolve(JSON.parse(message));
     };
     socket.on('error', error => {
@@ -146,8 +172,13 @@ export async function sendCommand(
       logger('Socket closed:');
       reject(new Error('Socket closed'));
     });
-    logger('Sending message', command);
-    transport.send(JSON.stringify(command));
+    logger('Sending message', {
+      method: authenticatedCommand.method,
+      ...(authenticatedCommand.method === 'invoke_tool'
+        ? {tool: authenticatedCommand.tool, timeoutMs: authenticatedCommand.timeoutMs}
+        : {}),
+    });
+    transport.send(JSON.stringify(authenticatedCommand));
   });
 }
 

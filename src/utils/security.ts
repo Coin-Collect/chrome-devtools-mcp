@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import {execFile} from 'node:child_process';
 import {lookup} from 'node:dns/promises';
 import {constants as fsConstants} from 'node:fs';
 import fs from 'node:fs/promises';
@@ -13,6 +14,7 @@ import type {LookupFunction} from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import {domainToASCII} from 'node:url';
+import {promisify} from 'node:util';
 
 import {getDomain} from 'tldts-icann';
 
@@ -28,6 +30,25 @@ const REMOTE_IMAGE_REQUEST_TIMEOUT_MS = 15_000;
 const MAX_REMOTE_IMAGE_REDIRECTS = 5;
 const UNSAFE_WHITELIST_WRITE_BITS = 0o022;
 const DOMAIN_LABEL_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)$/;
+const execFileAsync = promisify(execFile);
+
+// tldts-icann intentionally excludes the public suffix list's private section.
+// These common hosting suffixes must not become trust boundaries for tenants.
+const PRIVATE_HOSTING_SUFFIXES = new Set([
+  'appspot.com',
+  'azurewebsites.net',
+  'blogspot.com',
+  'cloudfront.net',
+  'firebaseapp.com',
+  'github.io',
+  'herokuapp.com',
+  'netlify.app',
+  'pages.dev',
+  's3.amazonaws.com',
+  'vercel.app',
+  'web.app',
+  'workers.dev',
+]);
 
 type SupportedImageMimeType =
   | 'image/png'
@@ -495,6 +516,12 @@ export function normalizeWhitelistDomain(value: unknown): string {
     );
   }
 
+  if (PRIVATE_HOSTING_SUFFIXES.has(domain)) {
+    throw new SecurityViolationError(
+      `Security Violation: Private hosting suffixes cannot be whitelisted directly (${domain}).`,
+    );
+  }
+
   return domain;
 }
 
@@ -512,6 +539,41 @@ function assertSecureWhitelistPermissions(
   }
 }
 
+async function assertSecureWindowsAcl(filePath: string): Promise<void> {
+  if (process.platform !== 'win32') {
+    return;
+  }
+
+  let stdout: string;
+  try {
+    const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
+    const icaclsPath = path.join(systemRoot, 'System32', 'icacls.exe');
+    ({stdout} = await execFileAsync(icaclsPath, [filePath], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024,
+      windowsHide: true,
+    }));
+  } catch {
+    throw new SecurityViolationError(
+      'Security Violation: Unable to verify whitelist permissions on Windows.',
+    );
+  }
+
+  const broadPrincipal =
+    /^\s*(?:Everyone|BUILTIN\\Users|Users|Authenticated Users|NT AUTHORITY\\Authenticated Users)\s*:/im;
+  const writePermission =
+    /\((?:F|M|W|WD|AD|DC|WA|WEA|WDAC|WO|GW)\)/i;
+  if (
+    stdout
+      .split(/\r?\n/)
+      .some(line => broadPrincipal.test(line) && writePermission.test(line))
+  ) {
+    throw new SecurityViolationError(
+      'Security Violation: The whitelist must not be writable by broad Windows user groups.',
+    );
+  }
+}
+
 async function readSecureWhitelistFile(whitelistPath: string): Promise<string> {
   let fileHandle: fs.FileHandle | undefined;
   try {
@@ -522,6 +584,7 @@ async function readSecureWhitelistFile(whitelistPath: string): Promise<string> {
       );
     }
     assertSecureWhitelistPermissions(directoryStats.mode, 'directory');
+    await assertSecureWindowsAcl(path.dirname(whitelistPath));
 
     const fileStats = await fs.lstat(whitelistPath);
     if (!fileStats.isFile() || fileStats.isSymbolicLink()) {
@@ -530,6 +593,7 @@ async function readSecureWhitelistFile(whitelistPath: string): Promise<string> {
       );
     }
     assertSecureWhitelistPermissions(fileStats.mode, 'file');
+    await assertSecureWindowsAcl(whitelistPath);
 
     const flags =
       process.platform === 'win32'

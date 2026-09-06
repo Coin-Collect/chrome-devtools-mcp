@@ -21,6 +21,7 @@ import * as screenshotTools from './screenshot.js';
 // import * as scriptTools from './script.js';
 // import * as slimTools from './slim/tools.js';
 import * as snapshotTools from './snapshot.js';
+import type {DefinedPageTool, ToolDefinition} from './ToolDefinition.js';
 import {
   addWorkflowStep,
   clickAtLikeHuman,
@@ -37,12 +38,11 @@ import {
   simulateWorkflow,
   typeLikeHuman,
 } from './workflow.js';
-import type {DefinedPageTool, ToolDefinition} from './ToolDefinition.js';
 
-export const createTools = (args: ParsedArguments) => {
+export const createTools = (_args: ParsedArguments) => {
   const rawTools = [
-    ...Object.values(snapshotTools),
-    ...Object.values(screenshotTools),
+    snapshotTools.takeSnapshot,
+    screenshotTools.screenshot,
     createWorkflow,
     updateWorkflow,
     updateWorkflowStep,

@@ -134,6 +134,8 @@ describe('whitelist security', () => {
       'example.com.',
       'com',
       'co.uk',
+      'github.io',
+      'blogspot.com',
       'localhost',
       '127.0.0.1',
       'bücher.de',

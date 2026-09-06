@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import {constants as fsConstants} from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -100,7 +101,34 @@ export async function saveOutputFile(
     );
   }
 
-  await fs.writeFile(filePath, data, {flag: options.overwrite ? 'w' : 'wx'});
+  // O_NOFOLLOW closes the check-then-open race on POSIX: a symlink cannot be
+  // swapped in between lstat() and the actual write.
+  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+  const flags =
+    fsConstants.O_WRONLY |
+    fsConstants.O_CREAT |
+    (options.overwrite ? fsConstants.O_TRUNC : fsConstants.O_EXCL) |
+    noFollow;
+  let fileHandle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    fileHandle = await fs.open(filePath, flags, 0o600);
+    await fileHandle.writeFile(data);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST' && !options.overwrite) {
+      throw new Error(
+        `Refusing to overwrite existing file: ${filePath}. Set overwrite to true to replace it.`,
+        {cause: error},
+      );
+    }
+    if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
+      throw new Error(`Refusing to write through symbolic link: ${filePath}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    await fileHandle?.close();
+  }
   return {filename: filePath};
 }
 

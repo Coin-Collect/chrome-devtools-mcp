@@ -127,18 +127,59 @@ async function copyProjectToHomedir() {
         if (basename === '.git') {
           return false;
         }
-        // Includes node_modules 
+        // Keep user-owned runtime configuration and secrets in place.
+        if (
+          basename === '.env' ||
+          basename.startsWith('.env.') ||
+          basename === 'wallet.json' ||
+          basename === 'whitelist.json' ||
+          basename === 'output' ||
+          basename.endsWith('.log')
+        ) {
+          return false;
+        }
+        // Includes node_modules.
         return true;
       }
     });
     console.log(`Project copied to ${destDir} successfully.`);
 
+    const assertSafeConfigPath = (configPath: string): void => {
+      try {
+        const stats = fs.lstatSync(configPath);
+        if (stats.isSymbolicLink() || !stats.isFile()) {
+          throw new Error(`Refusing to use unsafe configuration path: ${configPath}`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
+    };
+
+    const tightenConfigPermissions = (configPath: string): void => {
+      if (process.platform !== 'win32' && fs.existsSync(configPath)) {
+        fs.chmodSync(configPath, 0o600);
+      }
+    };
+
     const whitelistPath = path.join(destDir, 'whitelist.json');
-    fs.writeFileSync(whitelistPath, JSON.stringify(["sapienx.app"], null, 2), 'utf-8');
-    console.log('Created whitelist.json with sapienx.app');
+    assertSafeConfigPath(whitelistPath);
+    if (!fs.existsSync(whitelistPath)) {
+      fs.writeFileSync(
+        whitelistPath,
+        JSON.stringify(['sapienx.app'], null, 2),
+        {encoding: 'utf8', mode: 0o600},
+      );
+      console.log('Created whitelist.json with sapienx.app');
+    } else {
+      console.log('whitelist.json already exists, skipping.');
+    }
+    tightenConfigPermissions(whitelistPath);
 
     // Create wallet.json if it doesn't exist
     const walletPath = path.join(destDir, 'wallet.json');
+    assertSafeConfigPath(walletPath);
     if (!fs.existsSync(walletPath)) {
       const { ethers } = await import('ethers');
       const wallet = ethers.Wallet.createRandom();
@@ -146,14 +187,19 @@ async function copyProjectToHomedir() {
         address: wallet.address,
         privateKey: wallet.privateKey,
       };
-      fs.writeFileSync(walletPath, JSON.stringify(walletData, null, 2), 'utf-8');
+      fs.writeFileSync(walletPath, JSON.stringify(walletData, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
       console.log(`Created wallet.json (address: ${wallet.address})`);
     } else {
       console.log('wallet.json already exists, skipping.');
     }
+    tightenConfigPermissions(walletPath);
 
     // Create .env if it doesn't exist
     const envPath = path.join(destDir, '.env');
+    assertSafeConfigPath(envPath);
     if (!fs.existsSync(envPath)) {
       const readline = await import('node:readline');
       const rl = readline.createInterface({
@@ -168,12 +214,16 @@ async function copyProjectToHomedir() {
       const supabaseKey = await question('Please enter your SUPABASE_KEY: ');
       
       const envContent = `SUPABASE_URL=${supabaseUrl}\nSUPABASE_KEY=${supabaseKey}\n`;
-      fs.writeFileSync(envPath, envContent, 'utf-8');
+      fs.writeFileSync(envPath, envContent, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
       rl.close();
       console.log('.env file created successfully in rockstarx folder.\n');
     } else {
       console.log('.env already exists, skipping.');
     }
+    tightenConfigPermissions(envPath);
 
     console.log('Linking package globally...');
     execSync('npm link', { cwd: destDir, stdio: 'inherit' });

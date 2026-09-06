@@ -59,8 +59,8 @@ export function getRuntimeHome(): string {
     return path.join('/tmp', `${APP_NAME}-${uid}`);
   }
 
-  // 3. Windows Fallback
-  return path.join(os.tmpdir(), APP_NAME);
+  // 3. Windows: keep credentials out of the shared system temp directory.
+  return path.join(os.homedir(), 'rockstarx', '.runtime');
 }
 
 export const IS_WINDOWS = os.platform() === 'win32';
@@ -68,6 +68,10 @@ export const IS_WINDOWS = os.platform() === 'win32';
 export function getPidFilePath() {
   const runtimeDir = getRuntimeHome();
   return path.join(runtimeDir, 'daemon.pid');
+}
+
+export function getDaemonTokenPath() {
+  return path.join(getRuntimeHome(), 'daemon.token');
 }
 
 export function getDaemonPid() {

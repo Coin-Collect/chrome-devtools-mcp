@@ -9,6 +9,7 @@ import {describe, it} from 'node:test';
 
 import {
   createAuthorizedWalletSigner,
+  createWalletFrameWhitelistGuard,
   createWalletWhitelistGuard,
 } from '../src/wallet.js';
 
@@ -60,5 +61,30 @@ describe('wallet whitelist guard', () => {
 
     await assert.rejects(sign('message'), error => error === violation);
     assert.strictEqual(signed, false);
+  });
+
+  it('requires the per-page bridge token and same-origin frame', async () => {
+    const checkedUrls: string[] = [];
+    const guard = createWalletFrameWhitelistGuard(
+      {url: () => 'https://allowed.example/app'},
+      'expected-token',
+      async url => {
+        checkedUrls.push(url);
+      },
+    );
+
+    await assert.rejects(
+      guard('wrong-token', 'https://allowed.example'),
+      /bridge token is invalid/,
+    );
+    await assert.rejects(
+      guard('expected-token', 'https://other.example'),
+      /different frame origin/,
+    );
+    await guard('expected-token', 'https://allowed.example');
+    assert.deepStrictEqual(checkedUrls, [
+      'https://allowed.example/app',
+      'https://allowed.example/app',
+    ]);
   });
 });

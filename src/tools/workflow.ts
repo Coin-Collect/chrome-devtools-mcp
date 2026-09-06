@@ -7,7 +7,14 @@
 
 import { supabase } from '../supabase.js';
 import { zod } from '../third_party/index.js';
-import type { ElementHandle, KeyInput, Page, Frame, SerializedAXNode } from '../third_party/index.js';
+import type {
+    ElementHandle,
+    Frame,
+    HTTPRequest,
+    KeyInput,
+    Page,
+    SerializedAXNode,
+} from '../third_party/index.js';
 import {
     checkNavigationSecurity,
     downloadWhitelistedImage,
@@ -17,15 +24,6 @@ import {
 import { ToolCategory } from './categories.js';
 import { definePageTool, defineTool, pageIdSchema } from './ToolDefinition.js';
 import type { Context, ContextPage, Response } from './ToolDefinition.js';
-import type { SelectorStrategy } from './workflowSelectors.js';
-import {
-    pickBestFrameSelector,
-    resolveFrame,
-} from './workflowSelectors.js';
-import {
-    isVariableTemplate,
-    validateWorkflowStepDefinition,
-} from './workflowValidation.js';
 import {
     createWorkflowListPage,
     escapeLikePattern,
@@ -37,6 +35,15 @@ import {
     summarizeWorkflowList,
     workflowMatchesHostname,
 } from './workflowList.js';
+import type { SelectorStrategy } from './workflowSelectors.js';
+import {
+    pickBestFrameSelector,
+    resolveFrame,
+} from './workflowSelectors.js';
+import {
+    isVariableTemplate,
+    validateWorkflowStepDefinition,
+} from './workflowValidation.js';
 
 
 export const createWorkflow = defineTool({
@@ -929,6 +936,7 @@ async function buildSelectorsDataForUid(
 ): Promise<SelectorsData> {
     const handle = await page.getElementByUid(uid);
     try {
+        await ensureWhitelistedFrame(page.pptrPage, handle.frame);
         const node = page.getAXNodeByUid(uid);
 
         if (!node) {
@@ -1923,6 +1931,12 @@ async function findElementByAccessibilitySnapshot(
             await element.dispose();
             continue;
         }
+        try {
+            await ensureWhitelistedFrame(page, element.frame);
+        } catch (error) {
+            await element.dispose();
+            throw error;
+        }
         return {element, usedStrategy: strategy};
     }
 
@@ -1942,6 +1956,7 @@ async function findElementBySelectors(
     while (Date.now() <= deadline) {
         try {
             const targetFrame = await resolveFrame(page, selectors.frame_selectors);
+            await ensureWhitelistedFrame(page, targetFrame);
             const result = await findElementByStrategies(
                 targetFrame,
                 strategies,
@@ -1955,6 +1970,12 @@ async function findElementBySelectors(
         }
 
         for (const frame of page.frames()) {
+            try {
+                await ensureWhitelistedFrame(page, frame);
+            } catch {
+                // Never search or interact with a frame outside the whitelist.
+                continue;
+            }
             const result = await findElementByStrategies(
                 frame,
                 strategies,
@@ -2244,6 +2265,88 @@ async function ensureWhitelistedPage(
     await checkNavigationSecurity(page.url());
 }
 
+async function ensureWhitelistedFrame(page: Page, frame: Frame): Promise<void> {
+    let current: Frame | null = frame;
+    const visited = new Set<Frame>();
+    let checkedConcreteFrame = false;
+
+    while (current && !visited.has(current)) {
+        visited.add(current);
+        const frameUrl = current.url();
+        if (
+            frameUrl &&
+            frameUrl !== 'about:blank' &&
+            !frameUrl.startsWith('data:') &&
+            !frameUrl.startsWith('blob:')
+        ) {
+            await checkNavigationSecurity(frameUrl);
+            checkedConcreteFrame = true;
+        }
+        current = current.parentFrame();
+    }
+
+    // about:blank, data:, and blob: frames inherit the origin of their parent.
+    if (!checkedConcreteFrame) {
+        await checkNavigationSecurity(page.url());
+    }
+}
+
+async function withNavigationSecurity<T>(
+    page: Page,
+    action: () => Promise<T>,
+): Promise<T> {
+    let blockedError: unknown;
+    const onRequest = async (request: HTTPRequest) => {
+        try {
+            if (request.isNavigationRequest()) {
+                await checkNavigationSecurity(request.url());
+            }
+            await request.continue();
+        } catch (error) {
+            blockedError ??= error;
+            try {
+                await request.abort('blockedbyclient');
+            } catch {
+                // The request may already have been resolved by the browser.
+            }
+        }
+    };
+
+    await page.setRequestInterception(true);
+    page.on('request', onRequest);
+    let result: T;
+    try {
+        result = await action();
+    } catch (error) {
+        if (blockedError) {
+            throw blockedError;
+        }
+        throw error;
+    } finally {
+        page.off('request', onRequest);
+        try {
+            await page.setRequestInterception(false);
+        } catch {
+            // The page may have been closed while navigating.
+        }
+    }
+
+    if (blockedError) {
+        throw blockedError;
+    }
+    return result!;
+}
+
+async function navigateWithSecurity(
+    page: Page,
+    url: string,
+): Promise<void> {
+    await checkNavigationSecurity(url);
+    await withNavigationSecurity(page, () =>
+        page.goto(url, {waitUntil: 'networkidle2'}),
+    );
+}
+
 async function clickBySelectorsLikeHuman(
     page: ContextPage,
     selectors: SelectorsData,
@@ -2280,28 +2383,30 @@ async function clickBySelectorsLikeHuman(
         throw new Error('Could not determine element position for click');
     }
 
-    const popupPage = await runAndCapturePopup(
-        page.pptrPage,
-        async () => {
-            await page.waitForEventsAfterAction(async () => {
-                // Move mouse naturally along a Bezier curve
-                await moveMouseNaturally(
-                    page.pptrPage.mouse,
-                    lastMouseX, lastMouseY,
-                    center.x, center.y,
-                );
-                lastMouseX = center.x;
-                lastMouseY = center.y;
+    const popupPage = await withNavigationSecurity(page.pptrPage, () =>
+        runAndCapturePopup(
+            page.pptrPage,
+            async () => {
+                await page.waitForEventsAfterAction(async () => {
+                    // Move mouse naturally along a Bezier curve
+                    await moveMouseNaturally(
+                        page.pptrPage.mouse,
+                        lastMouseX, lastMouseY,
+                        center.x, center.y,
+                    );
+                    lastMouseX = center.x;
+                    lastMouseY = center.y;
 
-                // Hover dwell: user reads/confirms before clicking (100-300ms)
-                await sleep(humanDelay(180, 0.4));
+                    // Hover dwell: user reads/confirms before clicking (100-300ms)
+                    await sleep(humanDelay(180, 0.4));
 
-                // Natural mousedown → hold → mouseup
-                await page.pptrPage.mouse.down();
-                await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25)))); // Hold 50-150ms
-                await page.pptrPage.mouse.up();
-            });
-        },
+                    // Natural mousedown → hold → mouseup
+                    await page.pptrPage.mouse.down();
+                    await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25)))); // Hold 50-150ms
+                    await page.pptrPage.mouse.up();
+                });
+            },
+        ),
     );
 
     if (popupPage) {
@@ -2560,13 +2665,11 @@ export const runWorkflow = definePageTool({
                             throw new Error('No URL provided for nav action');
                         }
 
-                        await checkNavigationSecurity(actionValue);
-
                         response.appendResponseLine(`  Navigating to: ${actionValue}`);
 
                         // Use waitForEventsAfterAction for navigation
                         await page.waitForEventsAfterAction(async () => {
-                            await page.pptrPage.goto(actionValue, { waitUntil: 'networkidle2' });
+                            await navigateWithSecurity(page.pptrPage, actionValue);
                         });
 
                         // Wait for page to settle
@@ -3044,10 +3147,9 @@ export const simulateWorkflow = definePageTool({
                     if (!actionValue) {
                         response.appendResponseLine(`  ⚠ No URL provided for nav action`);
                     } else {
-                        await checkNavigationSecurity(actionValue);
                         // Actually navigate to the URL
                         response.appendResponseLine(`  🌐 Navigating to: ${actionValue}`);
-                        await page.goto(actionValue, { waitUntil: 'networkidle2' });
+                        await navigateWithSecurity(page, actionValue);
                         await sleep(humanDelay(800, 0.3));
 
                         // Re-inject cursor and simulation styles on the new page
@@ -3159,6 +3261,7 @@ export const clickLikeHuman = definePageTool({
             const handle = await page.getElementByUid(request.params.uid);
 
         try {
+            await ensureWhitelistedFrame(page.pptrPage, handle.frame);
             await injectSymbolicCursor(page.pptrPage);
 
             // Scroll element into view naturally
@@ -3183,15 +3286,17 @@ export const clickLikeHuman = definePageTool({
             await sleep(humanDelay(180, 0.4));
 
             // Natural mousedown → hold → mouseup
-            const popupPage = await runAndCapturePopup(
-                page.pptrPage,
-                async () => {
-                    await page.waitForEventsAfterAction(async () => {
-                        await page.pptrPage.mouse.down();
-                        await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
-                        await page.pptrPage.mouse.up();
-                    });
-                },
+            const popupPage = await withNavigationSecurity(page.pptrPage, () =>
+                runAndCapturePopup(
+                    page.pptrPage,
+                    async () => {
+                        await page.waitForEventsAfterAction(async () => {
+                            await page.pptrPage.mouse.down();
+                            await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
+                            await page.pptrPage.mouse.up();
+                        });
+                    },
+                ),
             );
 
             if (popupPage) {
@@ -3253,6 +3358,7 @@ export const typeLikeHuman = definePageTool({
             const handle = await page.getElementByUid(uid);
 
         try {
+            await ensureWhitelistedFrame(page.pptrPage, handle.frame);
             await injectSymbolicCursor(page.pptrPage);
 
             // Scroll element into view naturally
@@ -3347,15 +3453,17 @@ export const clickAtLikeHuman = definePageTool({
         await sleep(humanDelay(180, 0.4));
 
         // Natural mousedown → hold → mouseup
-        const popupPage = await runAndCapturePopup(
-            page.pptrPage,
-            async () => {
-                await page.waitForEventsAfterAction(async () => {
-                    await page.pptrPage.mouse.down();
-                    await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
-                    await page.pptrPage.mouse.up();
-                });
-            },
+        const popupPage = await withNavigationSecurity(page.pptrPage, () =>
+            runAndCapturePopup(
+                page.pptrPage,
+                async () => {
+                    await page.waitForEventsAfterAction(async () => {
+                        await page.pptrPage.mouse.down();
+                        await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));
+                        await page.pptrPage.mouse.up();
+                    });
+                },
+            ),
         );
 
         if (popupPage) {
@@ -3392,6 +3500,8 @@ export const dragLikeHuman = definePageTool({
         const toHandle = await page.getElementByUid(request.params.to_uid);
 
         try {
+            await ensureWhitelistedFrame(page.pptrPage, fromHandle.frame);
+            await ensureWhitelistedFrame(page.pptrPage, toHandle.frame);
             await injectSymbolicCursor(page.pptrPage);
 
             // Scroll source element into view

@@ -7,12 +7,15 @@
 export type DaemonMessage =
   | {
       method: 'stop';
-    }
+      authToken?: string;
+  }
   | {
       method: 'status';
-    }
+      authToken?: string;
+  }
   | {
       method: 'invoke_tool';
+      authToken?: string;
       tool: string;
       args?: Record<string, unknown>;
       timeoutMs?: number;
