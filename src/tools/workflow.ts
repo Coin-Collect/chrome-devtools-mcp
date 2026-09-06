@@ -10,7 +10,6 @@ import { zod } from '../third_party/index.js';
 import type {
     ElementHandle,
     Frame,
-    HTTPRequest,
     KeyInput,
     Page,
     SerializedAXNode,
@@ -20,6 +19,11 @@ import {
     downloadWhitelistedImage,
     isSecurityViolation,
 } from '../utils/security.js';
+import {
+    assertPageFramesWhitelisted,
+    throwIfNavigationBlocked,
+    withBrowserNavigationSecurity,
+} from '../utils/browserSecurity.js';
 
 import { ToolCategory } from './categories.js';
 import { definePageTool, defineTool, pageIdSchema } from './ToolDefinition.js';
@@ -89,8 +93,9 @@ export const createWorkflow = defineTool({
             throw new Error(`Failed to create workflow: ${error.message}`);
         }
 
-        response.appendResponseLine(
+        response.appendUntrustedPageContent(
             `Successfully created workflow "${data.title}" (ID: ${data.id})`,
+            'workflow metadata',
         );
     },
 });
@@ -135,7 +140,7 @@ export const updateWorkflow = defineTool({
             throw new Error(`Failed to update workflow: ${error.message}`);
         }
 
-        response.appendResponseLine(`Successfully updated workflow "${data.title}" (ID: ${data.id})`);
+        response.appendUntrustedPageContent(`Successfully updated workflow "${data.title}" (ID: ${data.id})`, 'workflow metadata');
         response.appendResponseLine(`Updated fields: ${Object.keys(updates).join(', ')}`);
     },
 });
@@ -227,8 +232,9 @@ export const duplicateWorkflow = defineTool({
             }
         }
 
-        response.appendResponseLine(
+        response.appendUntrustedPageContent(
             `Successfully duplicated workflow "${workflow.title}" (ID: ${workflow.id}) as "${duplicatedWorkflow.title}" (ID: ${duplicatedWorkflow.id})`,
+            'workflow metadata',
         );
         response.appendResponseLine(`Duplicated ${steps?.length || 0} workflow steps.`);
     },
@@ -280,7 +286,7 @@ export const deleteWorkflow = defineTool({
             throw new Error(`Failed to delete workflow: ${deleteError.message}`);
         }
 
-        response.appendResponseLine(`Successfully deleted workflow "${workflow.title}" (ID: ${workflow.id})`);
+        response.appendUntrustedPageContent(`Successfully deleted workflow "${workflow.title}" (ID: ${workflow.id})`, 'workflow metadata');
         response.appendResponseLine(`Deleted ${deletedSteps?.length || 0} workflow steps.`);
     },
 });
@@ -498,10 +504,11 @@ export const listWorkflows = defineTool({
                 `Summary: ${summary.workflow_count} workflow(s) returned, ${summary.step_count} visible step(s).`,
             );
             if (Object.keys(summary.action_counts).length > 0) {
-                response.appendResponseLine(
+                response.appendUntrustedPageContent(
                     `Actions: ${Object.entries(summary.action_counts)
                         .map(([actionName, count]) => `${actionName}=${count}`)
                         .join(', ')}`,
+                    'workflow metadata',
                 );
             }
         }
@@ -1201,12 +1208,12 @@ export const addWorkflowStep = defineTool({
                 : `Successfully inserted step ${finalStepOrder} into workflow ${workflow_id}`,
         );
 
-        response.appendResponseLine(`Action: ${result.action}`);
+        response.appendUntrustedPageContent(`Action: ${result.action}`, 'workflow metadata');
         if (isChoiceSelectorsData(selectorsData)) {
             response.appendResponseLine(`Choice count: ${Object.keys(selectorsData.choices).length}`);
-            response.appendResponseLine(`Choices: ${Object.keys(selectorsData.choices).join(', ')}`);
+            response.appendUntrustedPageContent(`Choices: ${Object.keys(selectorsData.choices).join(', ')}`, 'workflow metadata');
         } else if (selectorsData) {
-            response.appendResponseLine(`Best selector: ${selectorsData.best_selector}`);
+            response.appendUntrustedPageContent(`Best selector: ${selectorsData.best_selector}`, 'page-derived selector data');
             response.appendResponseLine(`Selector strategies count: ${selectorsData.strategies.length}`);
         } else {
             response.appendResponseLine(`No selectors (element not required for this action)`);
@@ -1316,12 +1323,12 @@ export const updateWorkflowStep = definePageTool({
         response.appendResponseLine(
             `Successfully updated step ${step_order} in workflow ${workflow_id}`,
         );
-        response.appendResponseLine(`Action: ${data.action}`);
+        response.appendUntrustedPageContent(`Action: ${data.action}`, 'workflow metadata');
         if (isChoiceSelectorsData(data.selectors)) {
             response.appendResponseLine(`Choice count: ${Object.keys(data.selectors.choices).length}`);
-            response.appendResponseLine(`Choices: ${Object.keys(data.selectors.choices).join(', ')}`);
+            response.appendUntrustedPageContent(`Choices: ${Object.keys(data.selectors.choices).join(', ')}`, 'workflow metadata');
         } else if (isSelectorsData(data.selectors)) {
-            response.appendResponseLine(`Best selector: ${data.selectors.best_selector}`);
+            response.appendUntrustedPageContent(`Best selector: ${data.selectors.best_selector}`, 'page-derived selector data');
             response.appendResponseLine(`Selector strategies count: ${data.selectors.strategies.length}`);
         } else {
             response.appendResponseLine('No selectors (element not required for this action)');
@@ -1943,7 +1950,7 @@ async function findElementByAccessibilitySnapshot(
     return null;
 }
 
-async function findElementBySelectors(
+export async function findElementBySelectors(
     page: Page,
     selectors: SelectorsData,
 ): Promise<{ element: ElementHandle; usedStrategy: SelectorStrategy } | null> {
@@ -1965,15 +1972,17 @@ async function findElementBySelectors(
             if (result) {
                 return result;
             }
-        } catch {
+        } catch (error) {
+            if (isSecurityViolation(error)) throw error;
             // Fall back to scanning all frames below. Stored iframe paths can become stale.
         }
 
         for (const frame of page.frames()) {
             try {
                 await ensureWhitelistedFrame(page, frame);
-            } catch {
-                // Never search or interact with a frame outside the whitelist.
+            } catch (error) {
+                if (isSecurityViolation(error)) throw error;
+                // A detached frame can be skipped, but a policy violation cannot.
                 continue;
             }
             const result = await findElementByStrategies(
@@ -2247,6 +2256,7 @@ async function ensureWhitelistedPage(
     page: Page,
     waitForInitialNavigation = false,
 ): Promise<void> {
+    await throwIfNavigationBlocked(page.browser());
     if (waitForInitialNavigation && page.url() === 'about:blank') {
         try {
             await page.waitForNavigation({
@@ -2276,16 +2286,15 @@ async function ensureWhitelistedFrame(page: Page, frame: Frame): Promise<void> {
         if (
             frameUrl &&
             frameUrl !== 'about:blank' &&
-            !frameUrl.startsWith('data:') &&
-            !frameUrl.startsWith('blob:')
+            frameUrl !== 'about:srcdoc'
         ) {
-            await checkNavigationSecurity(frameUrl);
+            await checkNavigationSecurity(frameUrl.startsWith('blob:') ? new URL(frameUrl).origin : frameUrl);
             checkedConcreteFrame = true;
         }
         current = current.parentFrame();
     }
 
-    // about:blank, data:, and blob: frames inherit the origin of their parent.
+    // Blank and srcdoc frames also require a whitelisted ancestor.
     if (!checkedConcreteFrame) {
         await checkNavigationSecurity(page.url());
     }
@@ -2295,46 +2304,7 @@ async function withNavigationSecurity<T>(
     page: Page,
     action: () => Promise<T>,
 ): Promise<T> {
-    let blockedError: unknown;
-    const onRequest = async (request: HTTPRequest) => {
-        try {
-            if (request.isNavigationRequest()) {
-                await checkNavigationSecurity(request.url());
-            }
-            await request.continue();
-        } catch (error) {
-            blockedError ??= error;
-            try {
-                await request.abort('blockedbyclient');
-            } catch {
-                // The request may already have been resolved by the browser.
-            }
-        }
-    };
-
-    await page.setRequestInterception(true);
-    page.on('request', onRequest);
-    let result: T;
-    try {
-        result = await action();
-    } catch (error) {
-        if (blockedError) {
-            throw blockedError;
-        }
-        throw error;
-    } finally {
-        page.off('request', onRequest);
-        try {
-            await page.setRequestInterception(false);
-        } catch {
-            // The page may have been closed while navigating.
-        }
-    }
-
-    if (blockedError) {
-        throw blockedError;
-    }
-    return result!;
+    return withBrowserNavigationSecurity(page, action);
 }
 
 async function navigateWithSecurity(
@@ -2494,7 +2464,7 @@ export const runWorkflow = definePageTool({
         if (missingVariables.length > 0) {
             response.appendResponseLine('❌ Missing required variables:');
             for (const mv of missingVariables) {
-                response.appendResponseLine(`  • "${mv.variable}" — Step ${mv.stepOrder}: ${mv.description}`);
+                response.appendUntrustedPageContent(`  • "${mv.variable}" — Step ${mv.stepOrder}: ${mv.description}`, 'workflow metadata');
             }
             response.appendResponseLine('\nPlease provide these variables and try again.');
             return;
@@ -2508,12 +2478,13 @@ export const runWorkflow = definePageTool({
             let allSucceeded = true;
 
         for (const step of workflowSteps) {
+            await throwIfNavigationBlocked(page.pptrPage.browser());
             if (page.pptrPage.url() !== 'about:blank') {
                 await ensureWhitelistedPage(page.pptrPage);
             }
-            response.appendResponseLine(`\n▶ Executing step ${step.step_order}: ${step.action}`);
+            response.appendUntrustedPageContent(`\n▶ Executing step ${step.step_order}: ${step.action}`, 'workflow metadata');
             if (step.description) {
-                response.appendResponseLine(`  Description: ${step.description}`);
+                response.appendUntrustedPageContent(`Description: ${step.description}`, 'workflow metadata');
             }
 
             // Human-like thinking pause before action
@@ -2566,7 +2537,7 @@ export const runWorkflow = definePageTool({
                         }
 
                         const selectedChoiceKey = exactChoice ? choiceKey : normalizedChoiceKey!;
-                        response.appendResponseLine(`  Selected choice: ${selectedChoiceKey}`);
+                        response.appendUntrustedPageContent(`  Selected choice: ${selectedChoiceKey}`, 'workflow metadata');
 
                         const clickResult = await clickBySelectorsLikeHuman(
                             page,
@@ -2622,6 +2593,7 @@ export const runWorkflow = definePageTool({
                         // Focus-to-first-keystroke delay: natural pause after clicking before typing
                         await sleep(humanDelay(450, 0.4));
 
+                        await assertPageFramesWhitelisted(page.pptrPage);
                         // Type with realistic human-like rhythm using keyboard.down/up
                         await typeHumanLike(
                             page.pptrPage.keyboard,
@@ -2665,7 +2637,7 @@ export const runWorkflow = definePageTool({
                             throw new Error('No URL provided for nav action');
                         }
 
-                        response.appendResponseLine(`  Navigating to: ${actionValue}`);
+                        response.appendUntrustedPageContent(`  Navigating to: ${actionValue}`, 'workflow metadata');
 
                         // Use waitForEventsAfterAction for navigation
                         await page.waitForEventsAfterAction(async () => {
@@ -2787,7 +2759,9 @@ export const runWorkflow = definePageTool({
 
                     case 'screenshot': {
                         const filename = actionValue || `workflow_${currentWorkflowId}_step_${step.step_order}_${Date.now()}.png`;
+                        await assertPageFramesWhitelisted(page.pptrPage);
                         const screenshot = await page.pptrPage.screenshot({ encoding: 'binary' });
+                        await assertPageFramesWhitelisted(page.pptrPage);
                         const savedFile = await context.saveFile(screenshot as Uint8Array, filename);
                         response.appendResponseLine(`  Screenshot saved: ${savedFile.filename}`);
 
@@ -2812,7 +2786,7 @@ export const runWorkflow = definePageTool({
                             throw new Error('Element not found for upload_image action');
                         }
 
-                        response.appendResponseLine(`  Downloading image from: ${actionValue}`);
+                        response.appendUntrustedPageContent(`  Downloading image from: ${actionValue}`, 'workflow metadata');
 
                         const image = await downloadWhitelistedImage(actionValue);
                         const { filepath: filePath } = await context.saveTemporaryFile(
@@ -2922,7 +2896,8 @@ export const runWorkflow = definePageTool({
                     throw err;
                 }
 
-                // Don't stop on error, continue with next step
+                await throwIfNavigationBlocked(page.pptrPage.browser());
+                // Don't stop on ordinary action errors, continue with next step
                 continue;
             }
 
@@ -3054,7 +3029,7 @@ export const simulateWorkflow = definePageTool({
             const actionLabel = step.description || step.action;
             const actionValue = step.action_value || '';
 
-            response.appendResponseLine(`▶ Step ${step.step_order}: ${step.action} — ${actionLabel}`);
+            response.appendUntrustedPageContent(`▶ Step ${step.step_order}: ${step.action} — ${actionLabel}`, 'workflow metadata');
 
             try {
                 const elementActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
@@ -3148,7 +3123,7 @@ export const simulateWorkflow = definePageTool({
                         response.appendResponseLine(`  ⚠ No URL provided for nav action`);
                     } else {
                         // Actually navigate to the URL
-                        response.appendResponseLine(`  🌐 Navigating to: ${actionValue}`);
+                        response.appendUntrustedPageContent(`  🌐 Navigating to: ${actionValue}`, 'workflow metadata');
                         await navigateWithSecurity(page, actionValue);
                         await sleep(humanDelay(800, 0.3));
 
@@ -3343,8 +3318,10 @@ export const typeLikeHuman = definePageTool({
 
             // If no uid, type directly into the focused element
             if (!uid) {
+                await assertPageFramesWhitelisted(page.pptrPage);
                 await injectSymbolicCursor(page.pptrPage);
                 await sleep(humanDelay(200, 0.4));
+                await assertPageFramesWhitelisted(page.pptrPage);
                 await typeHumanLike(page.pptrPage.keyboard, request.params.text);
                 await removeSymbolicCursor(page.pptrPage);
 
@@ -3394,6 +3371,7 @@ export const typeLikeHuman = definePageTool({
             await sleep(humanDelay(450, 0.4));
 
             // Type with realistic human-like rhythm
+            await assertPageFramesWhitelisted(page.pptrPage);
             await typeHumanLike(page.pptrPage.keyboard, request.params.text);
 
             await removeSymbolicCursor(page.pptrPage);
@@ -3432,6 +3410,8 @@ export const clickAtLikeHuman = definePageTool({
         return withPulseFrame(page.pptrPage, async () => {
             const { x, y } = request.params;
 
+        await assertPageFramesWhitelisted(page.pptrPage);
+
         await injectSymbolicCursor(page.pptrPage);
 
         try {
@@ -3457,6 +3437,7 @@ export const clickAtLikeHuman = definePageTool({
             runAndCapturePopup(
                 page.pptrPage,
                 async () => {
+                    await assertPageFramesWhitelisted(page.pptrPage);
                     await page.waitForEventsAfterAction(async () => {
                         await page.pptrPage.mouse.down();
                         await sleep(Math.max(50, Math.floor(gaussianRandom(105, 25))));

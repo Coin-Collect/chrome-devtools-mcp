@@ -9,9 +9,10 @@ import {describe, it} from 'node:test';
 
 import {
   createAuthorizedWalletSigner,
-  createWalletFrameWhitelistGuard,
   createWalletWhitelistGuard,
 } from '../src/wallet.js';
+import {authorizeWalletContext} from '../src/walletBridge.js';
+import type {Protocol} from '../src/third_party/index.js';
 
 describe('wallet whitelist guard', () => {
   it('checks the current page URL on every wallet request', async () => {
@@ -63,28 +64,21 @@ describe('wallet whitelist guard', () => {
     assert.strictEqual(signed, false);
   });
 
-  it('requires the per-page bridge token and same-origin frame', async () => {
+  it('authenticates the Chrome execution context, including its ancestors', async () => {
     const checkedUrls: string[] = [];
-    const guard = createWalletFrameWhitelistGuard(
-      {url: () => 'https://allowed.example/app'},
-      'expected-token',
-      async url => {
-        checkedUrls.push(url);
-      },
-    );
-
-    await assert.rejects(
-      guard('wrong-token', 'https://allowed.example'),
-      /bridge token is invalid/,
-    );
-    await assert.rejects(
-      guard('expected-token', 'https://other.example'),
-      /different frame origin/,
-    );
-    await guard('expected-token', 'https://allowed.example');
-    assert.deepStrictEqual(checkedUrls, [
-      'https://allowed.example/app',
-      'https://allowed.example/app',
-    ]);
+    const context = {
+      id: 1, uniqueId: 'document-1', origin: 'https://allowed.example',
+      auxData: {frameId: 'main', isDefault: true},
+    } as Protocol.Runtime.ExecutionContextDescription;
+    const tree = {frame: {
+      id: 'main', url: 'https://allowed.example/app', securityOrigin: 'https://allowed.example',
+    }} as Protocol.Page.FrameTree;
+    const check = async (url: string) => { checkedUrls.push(url); };
+    await authorizeWalletContext(context, tree, check);
+    assert.deepStrictEqual(checkedUrls, ['https://allowed.example/app']);
+    await assert.rejects(authorizeWalletContext({...context, origin: 'https://blocked.example'}, tree, check), /caller origin/);
+    await assert.rejects(authorizeWalletContext({...context, auxData: {frameId: 'missing', isDefault: true}}, tree, check), /no longer exists/);
+    await assert.rejects(authorizeWalletContext({...context, auxData: {frameId: 'main', isDefault: false}}, tree, check), /execution context/);
+    await assert.rejects(authorizeWalletContext(context, {...tree, frame: {...tree.frame, securityOrigin: 'null'}}, check), /ancestor origin/);
   });
 });

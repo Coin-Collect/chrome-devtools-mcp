@@ -12,6 +12,7 @@ import {describe, it} from 'node:test';
 
 import {
   createWhitelistedImageDownloader,
+  assertSecureWindowsWhitelistAcl,
   filterPublicDnsAddresses,
   isPrivateOrReservedAddress,
   loadWhitelistDomains,
@@ -19,6 +20,20 @@ import {
   normalizeWhitelistDomain,
   validateDownloadedImage,
 } from '../src/utils/security.js';
+
+describe('Windows whitelist ACLs', () => {
+  it('rejects broad SID write access regardless of locale, ordering or combined rights', () => {
+    for (const sid of ['S-1-1-0', 'S-1-5-11', 'S-1-5-32-545']) {
+      for (const rights of [2, 6, 0x1f01ff, 0x40000000]) {
+        assert.throws(() => assertSecureWindowsWhitelistAcl([{sid, rights, type: 0}]), /Security Violation/);
+      }
+    }
+    assert.doesNotThrow(() => assertSecureWindowsWhitelistAcl([{sid: 'S-1-1-0', rights: 0x120089, type: 0}]));
+    assert.doesNotThrow(() => assertSecureWindowsWhitelistAcl([{sid: 'S-1-5-32-544', rights: 0x1f01ff, type: 0}]));
+    assert.throws(() => assertSecureWindowsWhitelistAcl({}), /Security Violation/);
+    assert.throws(() => assertSecureWindowsWhitelistAcl([{}]), /Security Violation/);
+  });
+});
 
 describe('remote image security', () => {
   it('rejects private, loopback, and reserved DNS results', () => {

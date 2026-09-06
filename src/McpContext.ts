@@ -48,6 +48,7 @@ import {
 import {saveOutputFile, saveTemporaryFile} from './utils/files.js';
 import type {SaveFileOptions} from './utils/files.js';
 import {checkNavigationSecurity} from './utils/security.js';
+import {assertPageFramesWhitelisted, installBrowserNavigationGuard} from './utils/browserSecurity.js';
 import {getNetworkMultiplierFromString} from './WaitForHelper.js';
 
 interface McpContextOptions {
@@ -128,6 +129,7 @@ export class McpContext implements Context {
   }
 
   async #init() {
+    await installBrowserNavigationGuard(this.browser);
     const pages = await this.createPagesSnapshot();
     await this.createExtensionServiceWorkersSnapshot();
     await this.#networkCollector.init(pages);
@@ -756,10 +758,12 @@ export class McpContext implements Context {
     devtoolsData: DevToolsData | undefined = undefined,
   ): Promise<void> {
     await checkNavigationSecurity(page.pptrPage.url());
+    await assertPageFramesWhitelisted(page.pptrPage);
     const rootNode = await page.pptrPage.accessibility.snapshot({
       includeIframes: true,
       interestingOnly: !verbose,
     });
+    await assertPageFramesWhitelisted(page.pptrPage);
     if (!rootNode) {
       return;
     }

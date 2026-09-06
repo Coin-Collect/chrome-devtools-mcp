@@ -539,6 +539,26 @@ function assertSecureWhitelistPermissions(
   }
 }
 
+export function assertSecureWindowsWhitelistAcl(entries: unknown): void {
+  if (!Array.isArray(entries)) {
+    throw new SecurityViolationError('Security Violation: Unable to parse whitelist ACL.');
+  }
+  const broadSids = new Set([
+    'S-1-1-0', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-32-546', 'S-1-5-4', 'S-1-5-2',
+  ]);
+  const writeMask = 0x40000000 | 0x10000000 | 0x000d0156;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' ||
+        typeof entry.sid !== 'string' || !Number.isInteger(entry.rights) ||
+        ![0, 1].includes(entry.type)) {
+      throw new SecurityViolationError('Security Violation: Unable to parse whitelist ACL entry.');
+    }
+    if (entry.type === 0 && broadSids.has(entry.sid) && (entry.rights & writeMask) !== 0) {
+      throw new SecurityViolationError('Security Violation: The whitelist must not be writable by broad Windows user groups.');
+    }
+  }
+}
+
 async function assertSecureWindowsAcl(filePath: string): Promise<void> {
   if (process.platform !== 'win32') {
     return;
@@ -547,11 +567,19 @@ async function assertSecureWindowsAcl(filePath: string): Promise<void> {
   let stdout: string;
   try {
     const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
-    const icaclsPath = path.join(systemRoot, 'System32', 'icacls.exe');
-    ({stdout} = await execFileAsync(icaclsPath, [filePath], {
+    const powershellPath = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const script = "$ErrorActionPreference = 'Stop'; $acl = Get-Acl -LiteralPath $env:ROCKSTAR_WHITELIST_ACL_PATH; $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { @{ sid = $_.IdentityReference.Value; rights = [int]$_.FileSystemRights; type = [int]$_.AccessControlType } }); ConvertTo-Json -InputObject $rules -Compress";
+    ({stdout} = await execFileAsync(powershellPath, [
+      '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+    ], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024,
       windowsHide: true,
+      env: {
+        ...process.env,
+        PSModulePath: path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
+        ROCKSTAR_WHITELIST_ACL_PATH: filePath,
+      },
     }));
   } catch {
     throw new SecurityViolationError(
@@ -559,18 +587,11 @@ async function assertSecureWindowsAcl(filePath: string): Promise<void> {
     );
   }
 
-  const broadPrincipal =
-    /^\s*(?:Everyone|BUILTIN\\Users|Users|Authenticated Users|NT AUTHORITY\\Authenticated Users)\s*:/im;
-  const writePermission =
-    /\((?:F|M|W|WD|AD|DC|WA|WEA|WDAC|WO|GW)\)/i;
-  if (
-    stdout
-      .split(/\r?\n/)
-      .some(line => broadPrincipal.test(line) && writePermission.test(line))
-  ) {
-    throw new SecurityViolationError(
-      'Security Violation: The whitelist must not be writable by broad Windows user groups.',
-    );
+  try {
+    assertSecureWindowsWhitelistAcl(JSON.parse(stdout.replace(/^\uFEFF/, '')));
+  } catch (error) {
+    if (isSecurityViolation(error)) throw error;
+    throw new SecurityViolationError('Security Violation: Unable to parse whitelist ACL.');
   }
 }
 

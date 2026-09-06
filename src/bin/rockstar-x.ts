@@ -26,7 +26,9 @@ import {
 import {isDaemonRunning, serializeArgs} from '../daemon/utils.js';
 import {logDisclaimers} from '../index.js';
 import {hideBin, yargs, type CallToolResult} from '../third_party/index.js';
-import type {Response as ToolResponse} from '../tools/ToolDefinition.js';
+import {McpResponse} from '../McpResponse.js';
+import type {ParsedArguments} from './chrome-devtools-mcp-cli-options.js';
+import {zod} from '../third_party/index.js';
 import {VERSION} from '../version.js';
 
 import {cliOptions, parseArguments} from './chrome-devtools-mcp-cli-options.js';
@@ -59,35 +61,21 @@ async function runListWorkflowsWithoutDaemon(
   outputFormat: 'md' | 'json',
 ): Promise<void> {
   const {listWorkflows} = await import('../tools/workflow.js');
-  const responseLines: string[] = [];
-  let structuredContent: Record<string, unknown> | undefined;
-  const response = {
-    appendResponseLine(value: string) {
-      responseLines.push(value);
-    },
-    appendUntrustedPageContent(value: string, _source: string) {
-      responseLines.push(value);
-    },
-    setStructuredContent(value: Record<string, unknown>) {
-      structuredContent = value;
-    },
-  } as ToolResponse;
+  const response = new McpResponse({} as ParsedArguments);
 
   await listWorkflows.handler(
-    {params: commandArgs} as Parameters<typeof listWorkflows.handler>[0],
+    {params: zod.object(listWorkflows.schema).parse(commandArgs)},
     response,
     undefined as never,
   );
 
-  if (outputFormat === 'json') {
-    console.log(
-      JSON.stringify(
-        structuredContent ?? {message: responseLines.join('\n')},
-      ),
-    );
-  } else {
-    console.log(responseLines.join('\n'));
-  }
+  console.log(await handleResponse({
+    content: [{type: 'text', text: response.responseLines.join('\n')}],
+    structuredContent: {
+      ...response.customStructuredContent,
+      pageContentTrust: response.pageContentTrust,
+    },
+  }, outputFormat));
 }
 
 if (

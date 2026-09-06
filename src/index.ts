@@ -27,6 +27,7 @@ import type {DefinedPageTool, ToolDefinition} from './tools/ToolDefinition.js';
 import {pageIdSchema} from './tools/ToolDefinition.js';
 import {createTools} from './tools/tools.js';
 import {getBrowserUseApiKey, connectBrowserUse} from './utils/browserUse.js';
+import {throwIfNavigationBlocked} from './utils/browserSecurity.js';
 import {VERSION} from './version.js';
 
 export async function createMcpServer(
@@ -202,6 +203,7 @@ export async function createMcpServer(
         try {
           logger(`${tool.name} request: ${JSON.stringify(params, null, '  ')}`);
           const context = await getContext();
+          await throwIfNavigationBlocked(context.browser);
           logger(`${tool.name} context: resolved`);
           await context.detectOpenDevToolsWindows();
           const response = serverArgs.slim
@@ -235,6 +237,7 @@ export async function createMcpServer(
               context,
             );
           }
+          await throwIfNavigationBlocked(context.browser);
           const {content, structuredContent} = await response.handle(
             tool.name,
             context,
