@@ -65,6 +65,9 @@ async function runListWorkflowsWithoutDaemon(
     appendResponseLine(value: string) {
       responseLines.push(value);
     },
+    appendUntrustedPageContent(value: string, _source: string) {
+      responseLines.push(value);
+    },
     setStructuredContent(value: Record<string, unknown>) {
       structuredContent = value;
     },
