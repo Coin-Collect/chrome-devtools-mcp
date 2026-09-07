@@ -12,7 +12,7 @@ import {ensureBrowserConnected, ensureBrowserLaunched} from './browser.js';
 import {loadIssueDescriptions} from './issue-descriptions.js';
 import {logger} from './logger.js';
 import {McpContext} from './McpContext.js';
-import {McpResponse} from './McpResponse.js';
+import {createToolErrorResponse, McpResponse} from './McpResponse.js';
 import {Mutex} from './Mutex.js';
 import {SlimMcpResponse} from './SlimMcpResponse.js';
 import {ClearcutLogger} from './telemetry/ClearcutLogger.js';
@@ -26,8 +26,8 @@ import {ToolCategory} from './tools/categories.js';
 import type {DefinedPageTool, ToolDefinition} from './tools/ToolDefinition.js';
 import {pageIdSchema} from './tools/ToolDefinition.js';
 import {createTools} from './tools/tools.js';
-import {getBrowserUseApiKey, connectBrowserUse} from './utils/browserUse.js';
 import {throwIfNavigationBlocked} from './utils/browserSecurity.js';
+import {getBrowserUseApiKey, connectBrowserUse} from './utils/browserUse.js';
 import {VERSION} from './version.js';
 
 export async function createMcpServer(
@@ -257,19 +257,11 @@ export async function createMcpServer(
           return result;
         } catch (err) {
           logger(`${tool.name} error:`, err, err?.stack);
-          let errorText = err && 'message' in err ? err.message : String(err);
-          if ('cause' in err && err.cause) {
-            errorText += `\nCause: ${err.cause.message}`;
+          const result = createToolErrorResponse(err);
+          if (!serverArgs.experimentalStructuredContent) {
+            delete result.structuredContent;
           }
-          return {
-            content: [
-              {
-                type: 'text',
-                text: errorText,
-              },
-            ],
-            isError: true,
-          };
+          return result;
         } finally {
           void clearcutLogger?.logToolInvocation({
             toolName: tool.name,

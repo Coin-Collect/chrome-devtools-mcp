@@ -70,6 +70,7 @@ export interface ImageContentData {
 export type UntrustedPageContentSource =
   | 'extracted page content'
   | 'page-derived error message'
+  | 'page dialog'
   | 'page-derived selector data'
   | 'workflow metadata';
 

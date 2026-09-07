@@ -26,7 +26,7 @@ import {
 import {isDaemonRunning, serializeArgs} from '../daemon/utils.js';
 import {logDisclaimers} from '../index.js';
 import {hideBin, yargs, type CallToolResult} from '../third_party/index.js';
-import {McpResponse} from '../McpResponse.js';
+import {createToolErrorResponse, McpResponse} from '../McpResponse.js';
 import type {ParsedArguments} from './chrome-devtools-mcp-cli-options.js';
 import {zod} from '../third_party/index.js';
 import {VERSION} from '../version.js';
@@ -69,13 +69,18 @@ async function runListWorkflowsWithoutDaemon(
     undefined as never,
   );
 
-  console.log(await handleResponse({
-    content: [{type: 'text', text: response.responseLines.join('\n')}],
-    structuredContent: {
-      ...response.customStructuredContent,
-      pageContentTrust: response.pageContentTrust,
-    },
-  }, outputFormat));
+  console.log(
+    await handleResponse(
+      {
+        content: [{type: 'text', text: response.responseLines.join('\n')}],
+        structuredContent: {
+          ...response.customStructuredContent,
+          pageContentTrust: response.pageContentTrust,
+        },
+      },
+      outputFormat,
+    ),
+  );
 }
 
 if (
@@ -368,11 +373,21 @@ for (const [commandName, commandDef] of Object.entries(commands)) {
             ),
           );
         } else {
-          console.error('Error:', response.error);
+          console.error(
+            await handleResponse(
+              createToolErrorResponse(response.error),
+              argv['output-format'] as 'json' | 'md',
+            ),
+          );
           process.exit(1);
         }
       } catch (error) {
-        console.error('Failed to execute command:', error);
+        console.error(
+          await handleResponse(
+            createToolErrorResponse(error),
+            argv['output-format'] as 'json' | 'md',
+          ),
+        );
         process.exit(1);
       }
     },

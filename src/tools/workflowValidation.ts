@@ -26,6 +26,18 @@ export function isVariableTemplate(value: string): boolean {
   return VARIABLE_TEMPLATE_PATTERN.test(value.trim());
 }
 
+export function parseWorkflowId(value: unknown): number {
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const id = Number(value.trim());
+    if (Number.isSafeInteger(id) && id > 0) {
+      return id;
+    }
+  }
+  throw new Error(
+    'run_workflow action_value must resolve to a positive integer workflow ID',
+  );
+}
+
 function requireActionValue(
   action: string,
   actionValue: string | undefined,

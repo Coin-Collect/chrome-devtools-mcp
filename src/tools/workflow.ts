@@ -26,6 +26,7 @@ import {
 } from '../utils/browserSecurity.js';
 
 import { ToolCategory } from './categories.js';
+import { appendScreenshotTrust } from './screenshot.js';
 import { definePageTool, defineTool, pageIdSchema } from './ToolDefinition.js';
 import type { Context, ContextPage, Response } from './ToolDefinition.js';
 import {
@@ -46,6 +47,7 @@ import {
 } from './workflowSelectors.js';
 import {
     isVariableTemplate,
+    parseWorkflowId,
     validateWorkflowStepDefinition,
 } from './workflowValidation.js';
 
@@ -2436,6 +2438,7 @@ export const runWorkflow = definePageTool({
             }
 
             const executionResults: Array<{ step: number; action: string; success: boolean; details: string }> = [];
+            const screenshotFilePaths: string[] = [];
 
         // Inject symbolic cursor for visual tracking
         await injectSymbolicCursor(page.pptrPage);
@@ -2763,7 +2766,9 @@ export const runWorkflow = definePageTool({
                         const screenshot = await page.pptrPage.screenshot({ encoding: 'binary' });
                         await assertPageFramesWhitelisted(page.pptrPage);
                         const savedFile = await context.saveFile(screenshot as Uint8Array, filename);
-                        response.appendResponseLine(`  Screenshot saved: ${savedFile.filename}`);
+                        screenshotFilePaths.push(savedFile.filename);
+                        appendScreenshotTrust(response, savedFile.filename, screenshotFilePaths);
+                        response.appendUntrustedPageContent(`  Screenshot saved: ${savedFile.filename}`, 'workflow metadata');
 
                         executionResults.push({ step: step.step_order, action: 'screenshot', success: true, details: savedFile.filename });
                         break;
@@ -2817,14 +2822,7 @@ export const runWorkflow = definePageTool({
                     }
 
                     case 'run_workflow': {
-                        if (!actionValue || !/^\d+$/.test(actionValue.trim())) {
-                            throw new Error('run_workflow action_value must resolve to a positive integer workflow ID');
-                        }
-
-                        const nestedWorkflowId = Number(actionValue.trim());
-                        if (!Number.isSafeInteger(nestedWorkflowId) || nestedWorkflowId <= 0) {
-                            throw new Error('run_workflow action_value must resolve to a positive integer workflow ID');
-                        }
+                        const nestedWorkflowId = parseWorkflowId(actionValue);
 
                         if (workflowPath.includes(nestedWorkflowId)) {
                             throw new Error(`Recursive workflow call detected: ${[...workflowPath, nestedWorkflowId].join(' -> ')}`);
@@ -3102,7 +3100,7 @@ export const simulateWorkflow = definePageTool({
                         lastMouseY = clickPoint.y;
                     }
 
-                    response.appendResponseLine(`  ✓ Element found (${result.usedStrategy.type})`);
+                    response.appendUntrustedPageContent(`  ✓ Element found (${result.usedStrategy.type})`, 'page-derived selector data');
 
                     // Pause for user observation
                     await sleep(pauseDuration);
@@ -3152,7 +3150,9 @@ export const simulateWorkflow = definePageTool({
                     });
 
                 } else if (step.action === 'run_workflow') {
-                    const targetWorkflow = actionValue || '(missing workflow ID)';
+                    const targetWorkflow = typeof actionValue === 'string' && isVariableTemplate(actionValue)
+                        ? actionValue.trim()
+                        : String(parseWorkflowId(actionValue));
                     await page.evaluate((workflowId: string) => {
                         const banner = document.createElement('div');
                         banner.className = '__wf_sim_banner';
@@ -3161,7 +3161,7 @@ export const simulateWorkflow = definePageTool({
                         document.body.appendChild(banner);
                     }, targetWorkflow);
 
-                    response.appendResponseLine(`  Would run workflow ${targetWorkflow}`);
+                    response.appendUntrustedPageContent(`  Would run workflow ${targetWorkflow}`, 'workflow metadata');
                     await sleep(Math.min(pauseDuration, 1500));
 
                     await page.evaluate(() => {

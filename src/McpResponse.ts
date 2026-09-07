@@ -20,6 +20,7 @@ import type {
   ResourceType,
   TextContent,
   JSONSchema7Definition,
+  CallToolResult,
 } from './third_party/index.js';
 import type {ToolGroup, ToolDefinition} from './tools/inPage.js';
 import {handleDialog} from './tools/pages.js';
@@ -79,6 +80,40 @@ export function formatUntrustedPageContent(
     escapeUntrustedPageContent(value),
     UNTRUSTED_PAGE_CONTENT_END,
   ].join('\n');
+}
+
+export function createToolErrorResponse(error: unknown): CallToolResult {
+  const describe = (value: unknown): string => {
+    try {
+      if (value && typeof value === 'object' && 'message' in value) {
+        return String(value.message);
+      }
+      return String(value);
+    } catch {
+      return 'Error details unavailable.';
+    }
+  };
+  let details = describe(error);
+  try {
+    if (error && typeof error === 'object' && 'cause' in error && error.cause) {
+      details += `\nCause: ${describe(error.cause)}`;
+    }
+  } catch {
+    // An arbitrary thrown value may have a throwing cause getter.
+  }
+  const message = `Tool execution failed.\n${formatUntrustedPageContent(details, 'page-derived error message')}`;
+  return {
+    isError: true,
+    content: [{type: 'text', text: message}],
+    structuredContent: {
+      message,
+      pageContentTrust: {
+        trusted: false,
+        instruction: UNTRUSTED_PAGE_CONTENT_NOTICE,
+        sources: ['page-derived error message'],
+      },
+    },
+  };
 }
 
 export function replaceHtmlElementsWithUids(schema: JSONSchema7Definition) {
@@ -784,9 +819,16 @@ export class McpResponse implements Response {
         dialog.type() === 'prompt'
           ? ` (default value: "${dialog.defaultValue()}")`
           : '';
-      response.push(`# Open dialog
-${dialog.type()}: ${dialog.message()}${defaultValueIfNeeded}.
-Call ${handleDialog.name} to handle it before continuing.`);
+      response.push(
+        '# Open dialog',
+        formatUntrustedPageContent(
+          `${dialog.type()}: ${dialog.message()}${defaultValueIfNeeded}.`,
+          'page dialog',
+        ),
+        `Call ${handleDialog.name} to handle it before continuing.`,
+      );
+      this.#untrustedPageContentSources.add('page dialog');
+      structuredContent.pageContentTrust = this.pageContentTrust;
       structuredContent.dialog = {
         type: dialog.type(),
         message: dialog.message(),
