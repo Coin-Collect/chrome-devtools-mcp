@@ -235,9 +235,7 @@ for (const [commandName, commandDef] of Object.entries(commands)) {
     },
     async argv => {
       try {
-        if (!isDaemonRunning()) {
-          await start([]);
-        }
+        await start([]);
 
         const commandArgs: Record<string, unknown> = {};
         for (const argName of Object.keys(args)) {

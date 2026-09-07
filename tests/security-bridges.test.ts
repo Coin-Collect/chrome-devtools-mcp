@@ -60,6 +60,7 @@ it('holds popup requests until checked, blocks denied URLs, and closes unprotect
   const browser = {
     target: () => ({createCDPSession: async () => root.asCdp()}),
   } as unknown as Browser;
+  const tab = new TestSession();
   let releaseCheck!: () => void;
   const checking = new Promise<void>(resolve => {
     releaseCheck = resolve;
@@ -70,9 +71,31 @@ it('holds popup requests until checked, blocks denied URLs, and closes unprotect
       throw new SecurityViolationError('blocked URL');
     }
   });
-  const popup = new TestSession();
-  root.children.set('popup-session', popup);
+  const rootFilter = root.commands.find(
+    c => c.method === 'Target.setAutoAttach',
+  )?.params?.filter as Array<{type?: string; exclude?: boolean}>;
+  const allows = (
+    filter: Array<{type?: string; exclude?: boolean}>,
+    type: string,
+  ) => !filter.find(entry => !entry.type || entry.type === type)?.exclude;
+  assert(allows(rootFilter, 'tab'));
+  assert(!allows(rootFilter, 'page'));
+  root.children.set('tab-session', tab);
   root.emit('Target.attachedToTarget', {
+    sessionId: 'tab-session',
+    waitingForDebugger: false,
+    targetInfo: {type: 'tab', targetId: 'tab-target'},
+  });
+  await setImmediate();
+  assert(!tab.commands.some(c => c.method === 'Fetch.enable'));
+  const childFilter = tab.commands.find(
+    c => c.method === 'Target.setAutoAttach',
+  )?.params?.filter as Array<{type?: string; exclude?: boolean}>;
+  assert(allows(childFilter, 'page'));
+  assert(allows(childFilter, 'iframe'));
+  const popup = new TestSession();
+  tab.children.set('popup-session', popup);
+  tab.emit('Target.attachedToTarget', {
     sessionId: 'popup-session',
     waitingForDebugger: true,
     targetInfo: {type: 'page', targetId: 'popup-target'},
@@ -83,6 +106,10 @@ it('holds popup requests until checked, blocks denied URLs, and closes unprotect
       popup.commands.findIndex(
         c => c.method === 'Runtime.runIfWaitingForDebugger',
       ),
+  );
+  assert.equal(
+    root.commands.filter(c => c.method === 'Target.setAutoAttach').length,
+    1,
   );
   popup.emit('Fetch.requestPaused', {
     requestId: 'first',
@@ -107,10 +134,27 @@ it('holds popup requests until checked, blocks denied URLs, and closes unprotect
     ),
   );
 
+  const iframe = new TestSession();
+  popup.children.set('iframe-session', iframe);
+  popup.emit('Target.attachedToTarget', {
+    sessionId: 'iframe-session',
+    waitingForDebugger: true,
+    targetInfo: {type: 'iframe', targetId: 'iframe-target'},
+  });
+  await setImmediate();
+  assert(iframe.commands.some(c => c.method === 'Fetch.enable'));
+  iframe.emit('Fetch.requestPaused', {
+    requestId: 'iframe-request',
+    request: {url: 'https://blocked.example'},
+  });
+  await setImmediate();
+  assert(iframe.commands.some(c => c.method === 'Fetch.failRequest'));
+  await assert.rejects(throwIfNavigationBlocked(browser), /Security Violation/);
+
   const broken = new TestSession();
   broken.failEnable = true;
-  root.children.set('broken-session', broken);
-  root.emit('Target.attachedToTarget', {
+  tab.children.set('broken-session', broken);
+  tab.emit('Target.attachedToTarget', {
     sessionId: 'broken-session',
     waitingForDebugger: true,
     targetInfo: {type: 'page', targetId: 'broken-target'},

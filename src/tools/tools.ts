@@ -14,7 +14,7 @@ import type {ParsedArguments} from '../bin/chrome-devtools-mcp-cli-options.js';
 // import * as lighthouseTools from './lighthouse.js';
 // import * as memoryTools from './memory.js';
 // import * as networkTools from './network.js';
-// import * as pagesTools from './pages.js';
+import * as pagesTools from './pages.js';
 // import * as performanceTools from './performance.js';
 // import * as screencastTools from './screencast.js';
 import * as screenshotTools from './screenshot.js';
@@ -41,6 +41,7 @@ import {
 
 export const createTools = (_args: ParsedArguments) => {
   const rawTools = [
+    pagesTools.listPages(_args),
     snapshotTools.takeSnapshot,
     screenshotTools.screenshot,
     createWorkflow,
@@ -59,7 +60,9 @@ export const createTools = (_args: ParsedArguments) => {
     dragLikeHuman,
   ];
 
-  const tools = [...rawTools] as unknown as Array<ToolDefinition | DefinedPageTool>;
+  const tools = [...rawTools] as unknown as Array<
+    ToolDefinition | DefinedPageTool
+  >;
   tools.sort((a, b) => {
     return a.name.localeCompare(b.name);
   });

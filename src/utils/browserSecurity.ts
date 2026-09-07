@@ -79,12 +79,10 @@ export async function installBrowserNavigationGuard(
       const root = await browser.target().createCDPSession();
       const guard: NavigationGuard = {root};
       const pending = new Set<Promise<void>>();
-      const filter = [
-        {type: 'tab'},
-        {type: 'page'},
-        {type: 'iframe'},
-        {exclude: true},
-      ];
+      // Browser-level filters cannot include both tab and page targets.
+      // Pages attach through tabs; recursive attachment also covers OOPIFs.
+      const rootFilter = [{type: 'tab'}, {exclude: true}];
+      const childFilter = [{type: 'page'}, {type: 'iframe'}, {exclude: true}];
       const recordFailure = (error: unknown) => {
         guard.violation ??= new SecurityViolationError(
           `Security Violation: navigation blocked (${error instanceof Error ? error.message : 'verification failed'}).`,
@@ -126,7 +124,7 @@ export async function installBrowserNavigationGuard(
               autoAttach: true,
               waitForDebuggerOnStart: true,
               flatten: true,
-              filter,
+              filter: childFilter,
             });
             if (event.waitingForDebugger) {
               await child.send('Runtime.runIfWaitingForDebugger');
@@ -150,7 +148,7 @@ export async function installBrowserNavigationGuard(
         autoAttach: true,
         waitForDebuggerOnStart: true,
         flatten: true,
-        filter,
+        filter: rootFilter,
       });
       while (pending.size) {
         await Promise.all(pending);

@@ -345,9 +345,7 @@ for (const [commandName, commandDef] of Object.entries(commands)) {
           return;
         }
 
-        if (!isDaemonRunning()) {
-          await start([]);
-        }
+        await start([]);
 
         const responseTimeout = argv['response-timeout'] as number;
         if (!Number.isFinite(responseTimeout) || responseTimeout < 0) {

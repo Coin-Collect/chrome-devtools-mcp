@@ -7,6 +7,7 @@
 import {spawn} from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
+import {setTimeout as delay} from 'node:timers/promises';
 
 import {logger} from '../logger.js';
 import type {CallToolResult} from '../third_party/index.js';
@@ -24,6 +25,8 @@ import {
 } from './utils.js';
 
 const FILE_TIMEOUT = 10_000;
+const DAEMON_READY_TIMEOUT = 30_000;
+const DAEMON_READY_POLL_INTERVAL = 100;
 
 /**
  * Waits for a file to be created and populated (removed = false) or removed (removed = true).
@@ -72,6 +75,7 @@ function waitForFile(filePath: string, removed = false) {
 export async function startDaemon(mcpArgs: string[] = []) {
   if (isDaemonRunning()) {
     logger('Daemon is already running');
+    await waitForDaemonReady();
     return;
   }
 
@@ -93,6 +97,41 @@ export async function startDaemon(mcpArgs: string[] = []) {
 
   await waitForFile(pidFilePath);
   await waitForFile(getDaemonTokenPath());
+  await waitForDaemonReady();
+}
+
+async function waitForDaemonReady(): Promise<void> {
+  const deadline = Date.now() + DAEMON_READY_TIMEOUT;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await sendCommand({method: 'status'}, 1_000);
+      if (response.success) {
+        const status = JSON.parse(response.result) as {
+          health?: {
+            daemonReady?: unknown;
+            mcpConnected?: unknown;
+          };
+        };
+        if (
+          status.health?.daemonReady === true &&
+          status.health?.mcpConnected === true
+        ) {
+          return;
+        }
+      } else {
+        lastError = response.error;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    await delay(DAEMON_READY_POLL_INTERVAL);
+  }
+
+  const detail = lastError instanceof Error ? `: ${lastError.message}` : '';
+  throw new Error(`Timed out waiting for daemon readiness${detail}`);
 }
 
 const DEFAULT_SEND_COMMAND_TIMEOUT = 60_000;
@@ -175,7 +214,10 @@ export async function sendCommand(
     logger('Sending message', {
       method: authenticatedCommand.method,
       ...(authenticatedCommand.method === 'invoke_tool'
-        ? {tool: authenticatedCommand.tool, timeoutMs: authenticatedCommand.timeoutMs}
+        ? {
+            tool: authenticatedCommand.tool,
+            timeoutMs: authenticatedCommand.timeoutMs,
+          }
         : {}),
     });
     transport.send(JSON.stringify(authenticatedCommand));
