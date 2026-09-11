@@ -21,6 +21,10 @@ const SERVICE_COMMANDS: HelpCommand[] = [
   {name: 'stop', description: 'Stop the background service'},
 ];
 
+const HELP_COMMANDS: HelpCommand[] = [
+  {name: 'help', description: 'Show the complete command list and usage'},
+];
+
 const SKILL_COMMANDS: HelpCommand[] = [
   {
     name: 'install_rockstar_skill',
@@ -173,6 +177,8 @@ export function renderRockstarHelp(
     '  rockstar take_snapshot',
     '  rockstar click_like_human <uid>',
     '  rockstar run_workflow <workflow_id>',
+    '',
+    ...renderCommandGroup('Help', HELP_COMMANDS, terminalWidth),
     '',
     ...renderCommandGroup('Service', SERVICE_COMMANDS, terminalWidth),
     '',

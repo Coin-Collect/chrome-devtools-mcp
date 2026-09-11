@@ -38,6 +38,16 @@ import {copyRockstarSkillToAgents} from './rockstarxSkill.js';
 
 const rawArgs = hideBin(process.argv);
 
+async function printHelpAndExit(): Promise<never> {
+  await new Promise<void>((resolve, reject) => {
+    process.stdout.write(
+      `${renderRockstarHelp(commands, process.stdout.columns || 100)}\n`,
+      error => (error ? reject(error) : resolve()),
+    );
+  });
+  process.exit(0);
+}
+
 async function start(args: string[]) {
   const combinedArgs = [...args, ...defaultArgs];
   await startDaemon(combinedArgs);
@@ -85,10 +95,9 @@ async function runListWorkflowsWithoutDaemon(
 
 if (
   rawArgs.length === 0 ||
-  (rawArgs.length === 1 && ['--help', '-h'].includes(rawArgs[0]))
+  (rawArgs.length === 1 && ['--help', '-h', 'help'].includes(rawArgs[0]))
 ) {
-  console.log(renderRockstarHelp(commands, process.stdout.columns || 100));
-  process.exit(0);
+  await printHelpAndExit();
 }
 
 function parseJsonObjectArg(argName: string, value: unknown): unknown {

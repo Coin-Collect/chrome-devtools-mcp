@@ -34,6 +34,8 @@ rockstar <tool> [arguments] [flags]
 
 Use `--help` on any command. Output defaults to Markdown, use `--output-format=json` for JSON.
 
+Use `rockstar help` or `rockstar --help` to print the complete command list and usage.
+
 ## Snapshot & Inspection
 
 ```bash

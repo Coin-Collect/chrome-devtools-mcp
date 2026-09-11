@@ -19,11 +19,13 @@ describe('Rockstar CLI help', () => {
     assert.ok(help.includes('Workflow management:'));
     assert.ok(help.includes('Workflow steps:'));
     assert.ok(help.includes('Workflow execution:'));
+    assert.ok(help.includes('help'));
     assert.ok(
       help.indexOf('add_workflow_step') < help.indexOf('update_workflow_step'),
     );
     assert.ok(
-      help.indexOf('update_workflow_step') < help.indexOf('delete_workflow_step'),
+      help.indexOf('update_workflow_step') <
+        help.indexOf('delete_workflow_step'),
     );
     assert.ok(!help.includes('take_snapshot [--verbose]'));
   });
