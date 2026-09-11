@@ -21,7 +21,7 @@ import {SecurityViolationError} from '../src/utils/security.js';
 import {ethereumProviderScript} from '../src/wallet.js';
 import {installWalletBridge} from '../src/walletBridge.js';
 
-it('rejects non-whitelisted and opaque child frames before capture or input', async () => {
+it('validates frame URLs while allowing local documents to inherit a trusted parent origin', async () => {
   const frame = {
     id: 'main',
     url: 'https://allowed.example',
@@ -32,9 +32,53 @@ it('rejects non-whitelisted and opaque child frames before capture or input', as
       throw new SecurityViolationError('blocked');
     }
   };
+
+  await assertFrameTreeWhitelisted(
+    {
+      frame,
+      childFrames: [
+        {
+          frame: {
+            ...frame,
+            id: 'srcdoc',
+            url: 'about:srcdoc',
+            securityOrigin: 'null',
+          },
+          childFrames: [
+            {
+              frame: {
+                ...frame,
+                id: 'blank',
+                url: 'about:blank',
+                securityOrigin: '://',
+              },
+            },
+          ],
+        },
+        {
+          frame: {
+            ...frame,
+            id: 'opaque-https',
+            url: 'https://allowed.example/sandboxed',
+            securityOrigin: 'null',
+          },
+        },
+        {
+          frame: {
+            ...frame,
+            id: 'opaque-blob',
+            url: 'blob:null/document',
+            securityOrigin: 'null',
+          },
+        },
+      ],
+    } as Protocol.Page.FrameTree,
+    check,
+  );
+
   for (const child of [
-    {url: 'https://blocked.example', securityOrigin: 'https://blocked.example'},
-    {url: 'about:srcdoc', securityOrigin: 'null'},
+    {url: 'https://blocked.example', securityOrigin: 'null'},
+    {url: 'blob:https://blocked.example/document', securityOrigin: 'null'},
   ]) {
     await assert.rejects(
       assertFrameTreeWhitelisted(
@@ -44,9 +88,19 @@ it('rejects non-whitelisted and opaque child frames before capture or input', as
         } as Protocol.Page.FrameTree,
         check,
       ),
+      /blocked/,
     );
   }
-  await assertFrameTreeWhitelisted({frame} as Protocol.Page.FrameTree, check);
+
+  await assert.rejects(
+    assertFrameTreeWhitelisted(
+      {
+        frame: {...frame, url: 'about:srcdoc', securityOrigin: 'null'},
+      } as Protocol.Page.FrameTree,
+      check,
+    ),
+    /opaque frame origin/,
+  );
 });
 
 it(

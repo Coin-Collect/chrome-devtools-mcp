@@ -15,41 +15,67 @@ import {checkNavigationSecurity, SecurityViolationError} from './security.js';
 
 type SecurityCheck = (url: string) => Promise<void>;
 
+function isOpaqueOrigin(origin: string | undefined): boolean {
+  return !origin || origin === 'null' || origin === '://';
+}
+
+function getNonOpaqueUrlOrigin(url: string): string | undefined {
+  try {
+    const origin = new URL(url).origin;
+    return isOpaqueOrigin(origin) ? undefined : origin;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function assertFrameTreeWhitelisted(
   tree: Protocol.Page.FrameTree,
   check: SecurityCheck = checkNavigationSecurity,
+  inheritedOrigin?: string,
 ): Promise<void> {
   const {url, securityOrigin} = tree.frame;
-  if (
-    url === 'about:blank' ||
-    url === 'about:srcdoc' ||
-    url.startsWith('blob:')
-  ) {
-    if (
-      !securityOrigin ||
-      securityOrigin === 'null' ||
-      securityOrigin === '://'
-    ) {
+  const isLocalDocument =
+    url === 'about:blank' || url === 'about:srcdoc' || url.startsWith('blob:');
+  let effectiveOrigin: string | undefined;
+
+  if (isLocalDocument) {
+    const reportedOrigin = isOpaqueOrigin(securityOrigin)
+      ? undefined
+      : securityOrigin;
+    const urlOrigin = url.startsWith('blob:')
+      ? getNonOpaqueUrlOrigin(url)
+      : undefined;
+    effectiveOrigin = reportedOrigin ?? urlOrigin ?? inheritedOrigin;
+    if (!effectiveOrigin) {
       throw new SecurityViolationError(
-        'Security Violation: opaque frame origin is not allowed.',
+        `Security Violation: opaque frame origin is not allowed (${url}).`,
       );
     }
-    await check(securityOrigin);
+
+    for (const origin of new Set(
+      [reportedOrigin, urlOrigin, effectiveOrigin].filter(
+        (value): value is string => value !== undefined,
+      ),
+    )) {
+      await check(origin);
+    }
   } else {
     await check(url);
-    if (
-      !securityOrigin ||
-      securityOrigin === 'null' ||
-      securityOrigin === '://'
-    ) {
+    if (isOpaqueOrigin(securityOrigin)) {
+      effectiveOrigin = getNonOpaqueUrlOrigin(url);
+    } else {
+      effectiveOrigin = securityOrigin;
+      await check(securityOrigin);
+    }
+    if (!effectiveOrigin) {
       throw new SecurityViolationError(
-        'Security Violation: opaque frame origin is not allowed.',
+        `Security Violation: opaque frame origin is not allowed (${url}).`,
       );
     }
-    await check(securityOrigin);
   }
+
   for (const child of tree.childFrames ?? []) {
-    await assertFrameTreeWhitelisted(child, check);
+    await assertFrameTreeWhitelisted(child, check, effectiveOrigin);
   }
 }
 
