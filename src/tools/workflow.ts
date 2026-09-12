@@ -668,12 +668,12 @@ async function matchesElementSignature(
         };
 
         return Object.entries(target).every(([key, value]) =>
-            actual[key as keyof ElementSignature] === value,
+            !value || actual[key as keyof ElementSignature] === value,
         );
     }, expected);
 }
 
-async function generateSelectorsForElement(
+export async function generateSelectorsForElement(
     handle: ElementHandle<Element>,
 ): Promise<SelectorStrategy[]> {
     const strategies: SelectorStrategy[] = await handle.evaluate((node: Node) => {
@@ -840,26 +840,9 @@ async function generateSelectorsForElement(
             priority: 11,
         });
 
-        const countMatches = (selectorValue: string, selectorType: string): number => {
-            try {
-                if (selectorType === 'xpath' || selectorType === 'text') {
-                    const result = document.evaluate(
-                        selectorValue,
-                        document,
-                        null,
-                        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-                        null,
-                    );
-                    return result.snapshotLength;
-                }
-                return document.querySelectorAll(selectorValue).length;
-            } catch {
-                return 0;
-            }
-        };
-
-        const uniqueResults = results.filter(strategy => countMatches(strategy.value, strategy.type) === 1);
-        return uniqueResults.length > 0 ? uniqueResults : results;
+        // Broad selectors remain useful when the element's exact DOM position
+        // changes. Runtime signature matching safely narrows them to one target.
+        return results;
     });
 
     // Sort by priority
@@ -1769,6 +1752,32 @@ interface WorkflowStep {
     selectors: SelectorsData | ChoiceSelectorsData | null;
 }
 
+async function selectUniqueMatchingElement(
+    elements: Array<ElementHandle<Element>>,
+    targetSignature?: ElementSignature,
+): Promise<ElementHandle<Element> | null> {
+    const matchingElements: Array<ElementHandle<Element>> = [];
+
+    for (const element of elements) {
+        try {
+            if (await matchesElementSignature(element, targetSignature)) {
+                matchingElements.push(element);
+            } else {
+                await element.dispose();
+            }
+        } catch {
+            await element.dispose();
+        }
+    }
+
+    if (matchingElements.length === 1) {
+        return matchingElements[0];
+    }
+
+    await Promise.all(matchingElements.map(element => element.dispose()));
+    return null;
+}
+
 async function findElementByStrategies(
     page: Page | Frame,
     strategies: SelectorStrategy[],
@@ -1840,16 +1849,70 @@ async function findElementByStrategies(
             } else if (strategy.type === 'xpath' || strategy.type === 'text') {
                 // XPath selectors
                 const elements = await page.$$('xpath/' + strategy.value);
-                if (elements.length === 1) {
-                    element = elements[0];
-                } else {
-                    await Promise.all(elements.map(candidate => candidate.dispose()));
-                }
+                element = await selectUniqueMatchingElement(
+                    elements,
+                    targetSignature,
+                );
             } else {
-                const elementHandle = await page.evaluateHandle((selectorValue: string) => {
+                const elementHandle = await page.evaluateHandle((
+                    selectorValue: string,
+                    target: ElementSignature | undefined,
+                ) => {
+                    const normalize = (value: string | null): string =>
+                        (value || '').replace(/\s+/g, ' ').trim();
+                    const matchesTarget = (element: Element): boolean => {
+                        if (!target) {
+                            return true;
+                        }
+
+                        const tagName = element.tagName.toLowerCase();
+                        const explicitRole = element.getAttribute('role');
+                        let implicitRole = '';
+                        if (tagName === 'button') {
+                            implicitRole = 'button';
+                        } else if (tagName === 'a' && element.hasAttribute('href')) {
+                            implicitRole = 'link';
+                        } else if (tagName === 'input') {
+                            const inputType = element.getAttribute('type') || 'text';
+                            implicitRole = ['button', 'submit', 'reset'].includes(inputType)
+                                ? 'button'
+                                : ['checkbox', 'radio'].includes(inputType)
+                                    ? inputType
+                                    : 'textbox';
+                        } else if (tagName === 'textarea') {
+                            implicitRole = 'textbox';
+                        } else if (tagName === 'select') {
+                            implicitRole = 'combobox';
+                        }
+
+                        const actual: ElementSignature = {
+                            tag_name: tagName,
+                            id: element.id,
+                            role: normalize(explicitRole) || implicitRole,
+                            aria_label: normalize(element.getAttribute('aria-label')),
+                            name: normalize(element.getAttribute('name')),
+                            type: normalize(element.getAttribute('type')),
+                            placeholder: normalize(element.getAttribute('placeholder')),
+                            test_id: normalize(
+                                element.getAttribute('data-testid') ||
+                                element.getAttribute('data-test') ||
+                                element.getAttribute('data-cy'),
+                            ),
+                            title: normalize(element.getAttribute('title')),
+                            href: normalize(element.getAttribute('href')),
+                            text: normalize(element.textContent).slice(0, 200),
+                        };
+
+                        return Object.entries(target).every(([key, value]) =>
+                            !value || actual[key as keyof ElementSignature] === value,
+                        );
+                    };
                     const matches: Element[] = [];
                     const collect = (root: Document | ShadowRoot): void => {
-                        matches.push(...root.querySelectorAll(selectorValue));
+                        matches.push(
+                            ...Array.from(root.querySelectorAll(selectorValue))
+                                .filter(matchesTarget),
+                        );
                         for (const element of root.querySelectorAll('*')) {
                             if (element.shadowRoot) {
                                 collect(element.shadowRoot);
@@ -1858,7 +1921,7 @@ async function findElementByStrategies(
                     };
                     collect(document);
                     return matches.length === 1 ? matches[0] : null;
-                }, strategy.value);
+                }, strategy.value, targetSignature);
                 element = elementHandle.asElement() as ElementHandle<Element> | null;
                 if (!element) {
                     void elementHandle.dispose();
@@ -1961,6 +2024,13 @@ export async function findElementBySelectors(
         [...selectors.strategies],
         selectors.ax_node_meta,
     );
+    if (selectors.target_signature) {
+        strategies.push({
+            type: 'target-signature',
+            value: '*',
+            priority: 14,
+        });
+    }
 
     while (Date.now() <= deadline) {
         try {
