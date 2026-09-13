@@ -34,13 +34,34 @@ export interface WorkflowChoiceSelectors {
   choices: Record<string, WorkflowSelectorSummary>;
 }
 
+export interface WorkflowChoiceActionSummary {
+  action: 'click';
+  selectors: WorkflowSelectorSummary;
+}
+
+export interface WorkflowChoiceWorkflowSummary {
+  action: 'run_workflow';
+  workflow_id: number;
+}
+
+export interface WorkflowChoiceActions {
+  choice_actions: Record<
+    string,
+    WorkflowChoiceActionSummary | WorkflowChoiceWorkflowSummary
+  >;
+}
+
 export interface WorkflowListStep {
   id: number | null;
   step_order: number;
   action: string;
   action_value: string | null;
   description: string | null;
-  selectors: WorkflowSelectorSummary | WorkflowChoiceSelectors | null;
+  selectors:
+    | WorkflowSelectorSummary
+    | WorkflowChoiceSelectors
+    | WorkflowChoiceActions
+    | null;
 }
 
 export interface WorkflowListItem {
@@ -156,13 +177,20 @@ function normalizeSelectorSummary(
 function normalizeSelectors(
   value: unknown,
   includeStrategies: boolean,
-): WorkflowSelectorSummary | WorkflowChoiceSelectors | null {
+):
+  | WorkflowSelectorSummary
+  | WorkflowChoiceSelectors
+  | WorkflowChoiceActions
+  | null {
   if (!isRecord(value)) {
     return null;
   }
 
   if (isRecord(value.choices)) {
-    const choices: Record<string, WorkflowSelectorSummary> = {};
+    const choices = Object.create(null) as Record<
+      string,
+      WorkflowSelectorSummary
+    >;
     for (const [choiceKey, choiceSelectors] of Object.entries(value.choices)) {
       const summary = normalizeSelectorSummary(
         choiceSelectors,
@@ -173,6 +201,38 @@ function normalizeSelectors(
       }
     }
     return {choices};
+  }
+
+  if (isRecord(value.choice_actions)) {
+    const choiceActions = Object.create(
+      null,
+    ) as WorkflowChoiceActions['choice_actions'];
+    for (const [choiceKey, choiceAction] of Object.entries(
+      value.choice_actions,
+    )) {
+      if (!isRecord(choiceAction) || typeof choiceAction.action !== 'string') {
+        continue;
+      }
+      if (choiceAction.action === 'click') {
+        const selectors = normalizeSelectorSummary(
+          choiceAction.selectors,
+          includeStrategies,
+        );
+        if (selectors) {
+          choiceActions[choiceKey] = {action: 'click', selectors};
+        }
+      } else if (
+        choiceAction.action === 'run_workflow' &&
+        asSafeInteger(choiceAction.workflow_id) !== null &&
+        (choiceAction.workflow_id as number) > 0
+      ) {
+        choiceActions[choiceKey] = {
+          action: 'run_workflow',
+          workflow_id: choiceAction.workflow_id as number,
+        };
+      }
+    }
+    return {choice_actions: choiceActions};
   }
 
   return normalizeSelectorSummary(value, includeStrategies);
@@ -443,6 +503,25 @@ export function formatWorkflowListLines(page: WorkflowListPage): string[] {
               `        ${displayValue(choiceKey, '(unnamed)')} `,
               step.selectors.choices[choiceKey],
             );
+          }
+        } else if (step.selectors && 'choice_actions' in step.selectors) {
+          const choiceKeys = Object.keys(step.selectors.choice_actions);
+          lines.push(
+            `      Choice actions (${choiceKeys.length}): ${choiceKeys.map(choiceKey => displayValue(choiceKey, '(unnamed)')).join(', ') || '(none)'}`,
+          );
+          for (const choiceKey of choiceKeys) {
+            const choiceAction = step.selectors.choice_actions[choiceKey];
+            if (choiceAction.action === 'click') {
+              appendSelectorLines(
+                lines,
+                `        ${displayValue(choiceKey, '(unnamed)')} click `,
+                choiceAction.selectors,
+              );
+            } else {
+              lines.push(
+                `        ${displayValue(choiceKey, '(unnamed)')} run_workflow: ${choiceAction.workflow_id}`,
+              );
+            }
           }
         } else if (step.selectors) {
           appendSelectorLines(lines, '      ', step.selectors);

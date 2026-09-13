@@ -40,16 +40,47 @@ import {
     summarizeWorkflowList,
     workflowMatchesHostname,
 } from './workflowList.js';
+import {
+    assertWorkflowCallIsNotRecursive,
+    collectMissingWorkflowVariables,
+    executeListChoiceActions,
+    getWorkflowVariableNames,
+    resolveListChoiceSelection,
+    resolveWorkflowValue,
+    validateWorkflowRuntimeVariables,
+} from './workflowRuntime.js';
 import type { SelectorStrategy } from './workflowSelectors.js';
 import {
     pickBestFrameSelector,
     resolveFrame,
 } from './workflowSelectors.js';
+import type {
+    ChoiceSelectorsData,
+    ElementSignature,
+    ListChoiceSelectorsData,
+    PersistedChoiceAction,
+    SelectorsData,
+    WorkflowSelectors,
+    WorkflowVariable,
+} from './workflowTypes.js';
 import {
     isVariableTemplate,
     parseWorkflowId,
     validateWorkflowStepDefinition,
 } from './workflowValidation.js';
+
+const choiceActionSchema = zod.discriminatedUnion('action', [
+    // eslint-disable-next-line @local/enforce-zod-schema -- Typed descriptors reject mixed click/workflow fields at the tool boundary.
+    zod.object({
+        action: zod.literal('click'),
+        uid: zod.string(),
+    }).strict(),
+    // eslint-disable-next-line @local/enforce-zod-schema -- Each choice must validate against exactly one action variant.
+    zod.object({
+        action: zod.literal('run_workflow'),
+        workflow_id: zod.number().int().positive().safe(),
+    }).strict(),
+]);
 
 
 export const createWorkflow = defineTool({
@@ -326,7 +357,7 @@ export const listWorkflows = defineTool({
             .optional()
             .describe('Optional case-insensitive substring filter for workflow titles.'),
         action: zod
-            .enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow'])
+            .enum(['click', 'choice_click', 'list_choice', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow'])
             .optional()
             .describe('Optional action filter. Returns workflows containing at least one matching step.'),
         limit: zod
@@ -524,48 +555,31 @@ export const listWorkflows = defineTool({
     },
 });
 
-interface SelectorsData {
-    best_selector: string;
-    strategies: SelectorStrategy[];
-    ax_node_meta: {
-        role: string;
-        name: string;
-        description: string;
-    };
-    target_signature?: ElementSignature;
-    frame_selectors?: string[];
-}
-
-interface ElementSignature {
-    tag_name: string;
-    id: string;
-    role: string;
-    aria_label: string;
-    name: string;
-    type: string;
-    placeholder: string;
-    test_id: string;
-    title: string;
-    href: string;
-    text: string;
-}
-
-interface ChoiceSelectorsData {
-    choices: Record<string, SelectorsData>;
-}
-
-function isChoiceSelectorsData(selectors: WorkflowStep['selectors']): selectors is ChoiceSelectorsData {
+function isChoiceSelectorsData(selectors: WorkflowSelectors | null): selectors is ChoiceSelectorsData {
     return Boolean(
         selectors &&
-        typeof selectors === 'object' &&
-        'choices' in selectors &&
-        selectors.choices &&
-        typeof selectors.choices === 'object',
+        isRecord(selectors) &&
+        Object.prototype.hasOwnProperty.call(selectors, 'choices') &&
+        isRecord(selectors.choices),
     );
 }
 
-function isSelectorsData(selectors: WorkflowStep['selectors']): selectors is SelectorsData {
-    return Boolean(selectors && !isChoiceSelectorsData(selectors) && selectors.strategies);
+function isListChoiceSelectorsData(selectors: WorkflowSelectors | null): selectors is ListChoiceSelectorsData {
+    return Boolean(
+        selectors &&
+        isRecord(selectors) &&
+        Object.prototype.hasOwnProperty.call(selectors, 'choice_actions') &&
+        isRecord(selectors.choice_actions),
+    );
+}
+
+function isSelectorsData(selectors: WorkflowSelectors | null): selectors is SelectorsData {
+    return Boolean(
+        selectors &&
+        !isChoiceSelectorsData(selectors) &&
+        !isListChoiceSelectorsData(selectors) &&
+        selectors.strategies,
+    );
 }
 
 function makeAxSelectorValue(role: string, name: string): string {
@@ -1023,17 +1037,18 @@ export const addWorkflowStep = defineTool({
     },
     schema: {
         workflow_id: zod.number().int().positive().describe('The ID of the workflow to add the step to'),
-        action: zod.enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow']).describe('The action type for this step'),
+        action: zod.enum(['click', 'choice_click', 'list_choice', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow']).describe('The action type for this step'),
         uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required for click, type, hover, extract, scroll, and upload_image actions.'),
         choices: zod.record(zod.string(), zod.string()).optional().describe('For choice_click actions, a map of choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.'),
-        action_value: zod.string().optional().describe('Value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)'),
+        choice_actions: zod.record(zod.string(), choiceActionSchema).optional().describe('For list_choice actions, a map of choice keys to {action:"click",uid:string} or {action:"run_workflow",workflow_id:positive integer}.'),
+        action_value: zod.string().optional().describe('Value for the action. For list_choice, use a JSON string array such as ["mushroom","cheese"] or a whole variable template such as {{ingredients}}.'),
         step_description: zod.string().optional().describe('A description of what this step does'),
         step_order: zod.number().int().positive().optional().describe('The order of this new step. If not provided, it will be set to last + 1. Fails if the order is already in use; use update_workflow_step to modify an existing step.'),
         insert_at: zod.number().int().positive().optional().describe('Insert a new step at this order and shift this and all later steps forward. Cannot be used with step_order.'),
         ...pageIdSchema,
     },
     handler: async (request, response, context) => {
-        const { workflow_id, action, uid, choices, action_value, step_description, step_order, insert_at, pageId } = request.params;
+        const { workflow_id, action, uid, choices, choice_actions, action_value, step_description, step_order, insert_at, pageId } = request.params;
 
         if (step_order !== undefined && insert_at !== undefined) {
             throw new Error('step_order and insert_at cannot be used together. Use step_order to add at an exact unused order or insert_at to shift later steps.');
@@ -1044,6 +1059,7 @@ export const addWorkflowStep = defineTool({
             actionValue: action_value,
             uid,
             choices,
+            choiceActions: choice_actions,
         });
 
         const { data: workflow, error: workflowError } = await supabase
@@ -1085,22 +1101,54 @@ export const addWorkflowStep = defineTool({
             await checkNavigationSecurity(action_value.trim());
         }
 
-        let selectorsData: SelectorsData | ChoiceSelectorsData | null = null;
+        let selectorsData: WorkflowSelectors | null = null;
 
         if (action === 'choice_click') {
             const selectorPage = pageId !== undefined
                 ? context.getPageById(pageId)
                 : context.getSelectedMcpPage();
-            const choiceSelectors: Record<string, SelectorsData> = {};
+            const choiceSelectors = Object.create(null) as Record<string, SelectorsData>;
             for (const [choiceKey, choiceUid] of Object.entries(choices ?? {})) {
                 choiceSelectors[choiceKey] = await buildSelectorsDataForUid(selectorPage, choiceUid.trim());
             }
             selectorsData = { choices: choiceSelectors };
+        } else if (action === 'list_choice') {
+            const persistedChoiceActions = Object.create(null) as Record<string, PersistedChoiceAction>;
+            for (const [choiceKey, choiceAction] of Object.entries(choice_actions ?? {})) {
+                if (choiceAction.action === 'click') {
+                    const selectorPage = pageId !== undefined
+                        ? context.getPageById(pageId)
+                        : context.getSelectedMcpPage();
+                    persistedChoiceActions[choiceKey] = {
+                        action: 'click',
+                        selectors: await buildSelectorsDataForUid(selectorPage, choiceAction.uid.trim()),
+                    };
+                } else {
+                    persistedChoiceActions[choiceKey] = {
+                        action: 'run_workflow',
+                        workflow_id: choiceAction.workflow_id,
+                    };
+                }
+            }
+            selectorsData = { choice_actions: persistedChoiceActions };
         } else if (uid !== undefined) {
             const selectorPage = pageId !== undefined
                 ? context.getPageById(pageId)
                 : context.getSelectedMcpPage();
             selectorsData = await buildSelectorsDataForUid(selectorPage, uid.trim());
+        }
+
+        if (
+            action === 'list_choice' &&
+            isListChoiceSelectorsData(selectorsData) &&
+            action_value &&
+            !isVariableTemplate(action_value)
+        ) {
+            resolveListChoiceSelection(
+                action_value,
+                selectorsData,
+                Object.create(null) as Record<string, WorkflowVariable>,
+            );
         }
 
         let finalStepOrder = insert_at ?? step_order;
@@ -1197,6 +1245,9 @@ export const addWorkflowStep = defineTool({
         if (isChoiceSelectorsData(selectorsData)) {
             response.appendResponseLine(`Choice count: ${Object.keys(selectorsData.choices).length}`);
             response.appendUntrustedPageContent(`Choices: ${Object.keys(selectorsData.choices).join(', ')}`, 'workflow metadata');
+        } else if (isListChoiceSelectorsData(selectorsData)) {
+            response.appendResponseLine(`Choice action count: ${Object.keys(selectorsData.choice_actions).length}`);
+            response.appendUntrustedPageContent(`Choice actions: ${Object.keys(selectorsData.choice_actions).join(', ')}`, 'workflow metadata');
         } else if (selectorsData) {
             response.appendUntrustedPageContent(`Best selector: ${selectorsData.best_selector}`, 'page-derived selector data');
             response.appendResponseLine(`Selector strategies count: ${selectorsData.strategies.length}`);
@@ -1216,14 +1267,15 @@ export const updateWorkflowStep = definePageTool({
     schema: {
         workflow_id: zod.number().describe('The ID of the workflow that contains the step'),
         step_order: zod.number().describe('The step order of the step to update'),
-        action: zod.enum(['click', 'choice_click', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow']).optional().describe('The new action type for this step'),
+        action: zod.enum(['click', 'choice_click', 'list_choice', 'type', 'wait', 'scroll', 'nav', 'hover', 'extract', 'screenshot', 'upload_image', 'run_workflow']).optional().describe('The new action type for this step'),
         uid: zod.string().optional().describe('The uid of an element on the page from the page content snapshot. Required when updating to an element-based action or when refreshing selectors.'),
         choices: zod.record(zod.string(), zod.string()).optional().describe('For choice_click actions, a map of choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}'),
-        action_value: zod.string().optional().describe('The new value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)'),
+        choice_actions: zod.record(zod.string(), choiceActionSchema).optional().describe('For list_choice actions, a map of choice keys to {action:"click",uid:string} or {action:"run_workflow",workflow_id:positive integer}.'),
+        action_value: zod.string().optional().describe('The new value for the action. For list_choice, use a JSON string array such as ["mushroom","cheese"] or a whole variable template such as {{ingredients}}.'),
         step_description: zod.string().optional().describe('The new description for this step'),
     },
     handler: async (request, response) => {
-        const { workflow_id, step_order, action, uid, choices, action_value, step_description } = request.params;
+        const { workflow_id, step_order, action, uid, choices, choice_actions, action_value, step_description } = request.params;
 
         const { data: existingStep, error: fetchError } = await supabase
             .from('workflow_steps')
@@ -1246,42 +1298,71 @@ export const updateWorkflowStep = definePageTool({
 
         const elementRequiredActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
         const requiresElement = elementRequiredActions.includes(nextAction);
+        const existingSelectors = (existingStep.selectors ?? null) as WorkflowSelectors | null;
+        const existingSelectorShape = isChoiceSelectorsData(existingSelectors)
+            ? 'choice' as const
+            : isListChoiceSelectorsData(existingSelectors)
+                ? 'list_choice' as const
+                : isSelectorsData(existingSelectors)
+                    ? 'element' as const
+                    : undefined;
 
-        let selectorsData: SelectorsData | ChoiceSelectorsData | null;
-        if (action === 'choice_click') {
-            if (!choices || Object.keys(choices).length === 0) {
-                throw new Error('Action "choice_click" requires a choices parameter mapping choice keys to element uids.');
-            }
-            if (!nextActionValue) {
-                throw new Error('Action "choice_click" requires action_value to specify the choice key or a variable template like {{choice}}.');
-            }
+        validateWorkflowStepDefinition({
+            action: nextAction,
+            actionValue: nextActionValue ?? undefined,
+            uid,
+            choices,
+            choiceActions: choice_actions,
+            existingSelectorShape,
+            existingChoiceKeys: isChoiceSelectorsData(existingSelectors)
+                ? Object.keys(existingSelectors.choices)
+                : undefined,
+        });
 
-            const choiceSelectors: Record<string, SelectorsData> = {};
+        let selectorsData: WorkflowSelectors | null = existingSelectors;
+        if (nextAction === 'choice_click' && choices !== undefined) {
+            const choiceSelectors = Object.create(null) as Record<string, SelectorsData>;
             for (const [choiceKey, choiceUid] of Object.entries(choices)) {
-                if (!choiceKey.trim()) {
-                    throw new Error('Action "choice_click" received an empty choice key.');
-                }
-                choiceSelectors[choiceKey] = await buildSelectorsDataForUid(request.page, choiceUid);
+                choiceSelectors[choiceKey] = await buildSelectorsDataForUid(request.page, choiceUid.trim());
             }
             selectorsData = { choices: choiceSelectors };
+        } else if (nextAction === 'list_choice' && choice_actions !== undefined) {
+            const persistedChoiceActions = Object.create(null) as Record<string, PersistedChoiceAction>;
+            for (const [choiceKey, choiceAction] of Object.entries(choice_actions)) {
+                if (choiceAction.action === 'click') {
+                    persistedChoiceActions[choiceKey] = {
+                        action: 'click',
+                        selectors: await buildSelectorsDataForUid(request.page, choiceAction.uid.trim()),
+                    };
+                } else {
+                    persistedChoiceActions[choiceKey] = {
+                        action: 'run_workflow',
+                        workflow_id: choiceAction.workflow_id,
+                    };
+                }
+            }
+            selectorsData = { choice_actions: persistedChoiceActions };
         } else if (uid) {
-            selectorsData = await buildSelectorsDataForUid(request.page, uid);
-        } else if (requiresElement && !existingStep.selectors) {
-            throw new Error(`Action "${nextAction}" requires a uid parameter to identify the target element.`);
-        } else {
-            selectorsData = (existingStep.selectors ?? null) as SelectorsData | ChoiceSelectorsData | null;
+            selectorsData = await buildSelectorsDataForUid(request.page, uid.trim());
         }
 
         if (nextAction === 'choice_click' && !isChoiceSelectorsData(selectorsData)) {
             throw new Error('Action "choice_click" requires choice selectors. Provide choices or keep existing choice selectors.');
         }
-
-        if (nextAction === 'run_workflow' && !nextActionValue) {
-            throw new Error('Action "run_workflow" requires action_value to specify the target workflow ID or a variable template like {{workflow_id}}.');
+        if (nextAction === 'list_choice' && !isListChoiceSelectorsData(selectorsData)) {
+            throw new Error('Action "list_choice" requires choice_actions. Provide choice_actions or keep existing list choice selectors.');
         }
 
         if (requiresElement && !isSelectorsData(selectorsData)) {
             throw new Error(`Action "${nextAction}" requires element selectors. Provide uid or keep existing selectors from an element-based step.`);
+        }
+
+        const actionChanged = action !== undefined && action !== existingStep.action;
+        if (!requiresElement && nextAction !== 'choice_click' && nextAction !== 'list_choice') {
+            selectorsData = null;
+        }
+        if (nextAction === 'list_choice' && isListChoiceSelectorsData(selectorsData) && nextActionValue && !isVariableTemplate(nextActionValue)) {
+            resolveListChoiceSelection(nextActionValue, selectorsData, Object.create(null) as Record<string, WorkflowVariable>);
         }
 
         const updates: Record<string, unknown> = {
@@ -1290,7 +1371,7 @@ export const updateWorkflowStep = definePageTool({
             description: nextDescription,
         };
 
-        if (uid || choices || action === 'choice_click' || (nextAction !== existingStep.action && selectorsData !== existingStep.selectors)) {
+        if (uid !== undefined || choices !== undefined || choice_actions !== undefined || actionChanged) {
             updates.selectors = selectorsData;
         }
 
@@ -1312,6 +1393,9 @@ export const updateWorkflowStep = definePageTool({
         if (isChoiceSelectorsData(data.selectors)) {
             response.appendResponseLine(`Choice count: ${Object.keys(data.selectors.choices).length}`);
             response.appendUntrustedPageContent(`Choices: ${Object.keys(data.selectors.choices).join(', ')}`, 'workflow metadata');
+        } else if (isListChoiceSelectorsData(data.selectors)) {
+            response.appendResponseLine(`Choice action count: ${Object.keys(data.selectors.choice_actions).length}`);
+            response.appendUntrustedPageContent(`Choice actions: ${Object.keys(data.selectors.choice_actions).join(', ')}`, 'workflow metadata');
         } else if (isSelectorsData(data.selectors)) {
             response.appendUntrustedPageContent(`Best selector: ${data.selectors.best_selector}`, 'page-derived selector data');
             response.appendResponseLine(`Selector strategies count: ${data.selectors.strategies.length}`);
@@ -1749,7 +1833,7 @@ interface WorkflowStep {
     action: string;
     action_value: string | null;
     description: string | null;
-    selectors: SelectorsData | ChoiceSelectorsData | null;
+    selectors: WorkflowSelectors | null;
 }
 
 async function selectUniqueMatchingElement(
@@ -2227,17 +2311,6 @@ async function pressKey(
 }
 
 
-const VARIABLE_PATTERN = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g;
-
-function resolveVariables(
-    template: string,
-    variables: Record<string, string>,
-): string {
-    return template.replace(VARIABLE_PATTERN, (_match, varName: string) => {
-        return variables[varName];
-    });
-}
-
 async function withPulseFrame<T>(page: Page, actionFn: () => Promise<T>): Promise<T> {
     try {
         await page.evaluate(() => {
@@ -2473,13 +2546,16 @@ export const runWorkflow = definePageTool({
     schema: {
         workflow_id: zod.number().describe('The ID of the workflow to run'),
         step_order: zod.number().optional().describe('If provided, only this specific step will be executed'),
-        variables: zod.record(zod.string(), zod.string()).optional().describe('Key-value pairs to resolve {{variable_name}} placeholders in action_value fields. Example: {"username": "john", "password": "secret"}'),
+        variables: zod.record(zod.string(), zod.union([zod.string(), zod.array(zod.string())])).optional().describe('Key-value pairs to resolve {{variable_name}} placeholders. Values may be strings or string arrays for list_choice. Example: {"username":"john","ingredients":["mushroom","cheese"]}'),
     },
     handler: async (request, response, context) => {
         let page = request.page;
         return withPulseFrame(page.pptrPage, async () => {
             const { workflow_id, step_order, variables } = request.params;
-            const vars: Record<string, string> = variables || {};
+            const vars: Record<string, WorkflowVariable> = Object.assign(
+                Object.create(null),
+                variables || {},
+            ) as Record<string, WorkflowVariable>;
 
             // Fetch workflow and steps
             let query = supabase
@@ -2514,25 +2590,10 @@ export const runWorkflow = definePageTool({
         await injectSymbolicCursor(page.pptrPage);
         try {
 
-        // Pre-execution variable validation: scan all steps for required variables
-        const missingVariables: Array<{ variable: string; stepOrder: number; description: string }> = [];
-        for (const step of steps as WorkflowStep[]) {
-            if (step.action_value) {
-                VARIABLE_PATTERN.lastIndex = 0;
-                let match = VARIABLE_PATTERN.exec(step.action_value);
-                while (match) {
-                    const varName = match[1];
-                    if (vars[varName] === undefined) {
-                        missingVariables.push({
-                            variable: varName,
-                            stepOrder: step.step_order,
-                            description: step.description || step.action,
-                        });
-                    }
-                    match = VARIABLE_PATTERN.exec(step.action_value);
-                }
-            }
-        }
+        // Pre-execution variable validation prevents missing values or list values
+        // from reaching scalar actions after earlier side effects have happened.
+        const typedSteps = steps as WorkflowStep[];
+        const missingVariables = collectMissingWorkflowVariables(typedSteps, vars);
 
         if (missingVariables.length > 0) {
             response.appendResponseLine('❌ Missing required variables:');
@@ -2543,12 +2604,80 @@ export const runWorkflow = definePageTool({
             return;
         }
 
-        const executeSteps = async (
+        try {
+            validateWorkflowRuntimeVariables(typedSteps, vars);
+        } catch (error) {
+            response.appendResponseLine('❌ Invalid workflow variables.');
+            response.appendUntrustedPageContent(
+                error instanceof Error ? error.message : String(error),
+                'workflow metadata',
+            );
+            return;
+        }
+
+        class WorkflowExecutionAbortError extends Error {
+            constructor(cause: unknown) {
+                super(cause instanceof Error ? cause.message : String(cause));
+                this.name = 'WorkflowExecutionAbortError';
+            }
+        }
+
+        type ExecuteSteps = (
             currentWorkflowId: number,
             workflowSteps: WorkflowStep[],
             workflowPath: number[],
+            options?: {stopOnError?: boolean},
+        ) => Promise<boolean>;
+
+        const runNestedWorkflow = async (
+            nestedWorkflowId: number,
+            workflowPath: number[],
+            stopOnError: boolean,
+        ): Promise<void> => {
+            assertWorkflowCallIsNotRecursive(workflowPath, nestedWorkflowId);
+
+            const { data: nestedSteps, error: nestedStepsError } = await supabase
+                .from('workflow_steps')
+                .select('*')
+                .eq('workflow_id', nestedWorkflowId)
+                .order('step_order', { ascending: true });
+
+            if (nestedStepsError) {
+                throw new Error(`Failed to fetch nested workflow ${nestedWorkflowId}: ${nestedStepsError.message}`);
+            }
+            if (!nestedSteps || nestedSteps.length === 0) {
+                throw new Error(`No steps found for nested workflow ${nestedWorkflowId}`);
+            }
+
+            const typedNestedSteps = nestedSteps as WorkflowStep[];
+            try {
+                validateWorkflowRuntimeVariables(typedNestedSteps, vars);
+            } catch (error) {
+                throw new Error(
+                    `Nested workflow ${nestedWorkflowId} has invalid variables: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+
+            response.appendResponseLine(`  Running nested workflow ${nestedWorkflowId}`);
+            const nestedSucceeded = await executeSteps(
+                nestedWorkflowId,
+                typedNestedSteps,
+                [...workflowPath, nestedWorkflowId],
+                {stopOnError},
+            );
+            if (!nestedSucceeded) {
+                throw new Error(`Nested workflow ${nestedWorkflowId} completed with failed steps`);
+            }
+        };
+
+        const executeSteps: ExecuteSteps = async (
+            currentWorkflowId: number,
+            workflowSteps: WorkflowStep[],
+            workflowPath: number[],
+            options = {},
         ): Promise<boolean> => {
             let allSucceeded = true;
+            const stopOnError = options.stopOnError === true;
 
         for (const step of workflowSteps) {
             await throwIfNavigationBlocked(page.pptrPage.browser());
@@ -2565,16 +2694,15 @@ export const runWorkflow = definePageTool({
 
             // Resolve template variables in action_value
             let actionValue = step.action_value;
-            if (actionValue && VARIABLE_PATTERN.test(actionValue)) {
-                // Reset lastIndex since we use global flag
-                VARIABLE_PATTERN.lastIndex = 0;
-                actionValue = resolveVariables(actionValue, vars);
+            if (actionValue && step.action !== 'list_choice') {
+                const resolvedValue = resolveWorkflowValue(actionValue, vars, false);
+                actionValue = Array.isArray(resolvedValue) ? null : resolvedValue;
             }
 
             try {
                 switch (step.action) {
                     case 'click': {
-                        if (!step.selectors || isChoiceSelectorsData(step.selectors)) {
+                        if (!isSelectorsData(step.selectors)) {
                             throw new Error('No selectors available for click action');
                         }
 
@@ -2599,7 +2727,12 @@ export const runWorkflow = definePageTool({
                         }
 
                         const choiceKey = actionValue.trim();
-                        const exactChoice = step.selectors.choices[choiceKey];
+                        const exactChoice = Object.prototype.hasOwnProperty.call(
+                            step.selectors.choices,
+                            choiceKey,
+                        )
+                            ? step.selectors.choices[choiceKey]
+                            : undefined;
                         const normalizedChoiceKey = Object.keys(step.selectors.choices).find(key =>
                             key.toLowerCase() === choiceKey.toLowerCase(),
                         );
@@ -2621,6 +2754,69 @@ export const runWorkflow = definePageTool({
                         page = clickResult.page;
 
                         executionResults.push({ step: step.step_order, action: 'choice_click', success: true, details: `Clicked choice "${selectedChoiceKey}" using ${clickResult.usedStrategy.type}` });
+                        break;
+                    }
+
+                    case 'list_choice': {
+                        if (!step.action_value) {
+                            throw new Error('No choice list provided for list_choice action');
+                        }
+                        if (!isListChoiceSelectorsData(step.selectors)) {
+                            throw new Error('No choice actions available for list_choice action');
+                        }
+
+                        const selected = await executeListChoiceActions(
+                            step.action_value,
+                            step.selectors,
+                            vars,
+                            {
+                                click: async (choiceKey, choiceAction) => {
+                                    response.appendUntrustedPageContent(
+                                        `  Selected list_choice option: ${choiceKey}`,
+                                        'workflow metadata',
+                                    );
+                                    const clickResult = await clickBySelectorsLikeHuman(
+                                        page,
+                                        choiceAction.selectors,
+                                        response,
+                                        context,
+                                    );
+                                    page = clickResult.page;
+                                    executionResults.push({
+                                        step: step.step_order,
+                                        action: 'list_choice',
+                                        success: true,
+                                        details: `Clicked option "${choiceKey}" using ${clickResult.usedStrategy.type}`,
+                                    });
+                                },
+                                runWorkflow: async (choiceKey, choiceAction) => {
+                                    response.appendUntrustedPageContent(
+                                        `  Selected list_choice option: ${choiceKey}`,
+                                        'workflow metadata',
+                                    );
+                                    await runNestedWorkflow(
+                                        choiceAction.workflow_id,
+                                        workflowPath,
+                                        true,
+                                    );
+                                    executionResults.push({
+                                        step: step.step_order,
+                                        action: 'list_choice',
+                                        success: true,
+                                        details: `Ran workflow option "${choiceKey}" (${choiceAction.workflow_id})`,
+                                    });
+                                },
+                            },
+                        );
+
+                        executionResults.push({
+                            step: step.step_order,
+                            action: 'list_choice',
+                            success: true,
+                            details: selected.length === 0
+                                ? 'No list_choice options selected'
+                                : `Completed ${selected.length} list_choice option(s)`,
+                        });
                         break;
                     }
 
@@ -2893,52 +3089,7 @@ export const runWorkflow = definePageTool({
 
                     case 'run_workflow': {
                         const nestedWorkflowId = parseWorkflowId(actionValue);
-
-                        if (workflowPath.includes(nestedWorkflowId)) {
-                            throw new Error(`Recursive workflow call detected: ${[...workflowPath, nestedWorkflowId].join(' -> ')}`);
-                        }
-
-                        const { data: nestedSteps, error: nestedStepsError } = await supabase
-                            .from('workflow_steps')
-                            .select('*')
-                            .eq('workflow_id', nestedWorkflowId)
-                            .order('step_order', { ascending: true });
-
-                        if (nestedStepsError) {
-                            throw new Error(`Failed to fetch nested workflow ${nestedWorkflowId}: ${nestedStepsError.message}`);
-                        }
-                        if (!nestedSteps || nestedSteps.length === 0) {
-                            throw new Error(`No steps found for nested workflow ${nestedWorkflowId}`);
-                        }
-
-                        const nestedMissingVariables: string[] = [];
-                        for (const nestedStep of nestedSteps as WorkflowStep[]) {
-                            if (!nestedStep.action_value) {
-                                continue;
-                            }
-                            VARIABLE_PATTERN.lastIndex = 0;
-                            let nestedMatch = VARIABLE_PATTERN.exec(nestedStep.action_value);
-                            while (nestedMatch) {
-                                if (vars[nestedMatch[1]] === undefined) {
-                                    nestedMissingVariables.push(nestedMatch[1]);
-                                }
-                                nestedMatch = VARIABLE_PATTERN.exec(nestedStep.action_value);
-                            }
-                        }
-                        if (nestedMissingVariables.length > 0) {
-                            const uniqueMissingVariables = [...new Set(nestedMissingVariables)];
-                            throw new Error(`Nested workflow ${nestedWorkflowId} requires missing variables: ${uniqueMissingVariables.join(', ')}`);
-                        }
-
-                        response.appendResponseLine(`  Running nested workflow ${nestedWorkflowId}`);
-                        const nestedSucceeded = await executeSteps(
-                            nestedWorkflowId,
-                            nestedSteps as WorkflowStep[],
-                            [...workflowPath, nestedWorkflowId],
-                        );
-                        if (!nestedSucceeded) {
-                            throw new Error(`Nested workflow ${nestedWorkflowId} completed with failed steps`);
-                        }
+                        await runNestedWorkflow(nestedWorkflowId, workflowPath, stopOnError);
 
                         executionResults.push({ step: step.step_order, action: 'run_workflow', success: true, details: `Ran workflow ${nestedWorkflowId}` });
                         break;
@@ -2964,6 +3115,12 @@ export const runWorkflow = definePageTool({
                     throw err;
                 }
 
+                if (stopOnError || step.action === 'list_choice' || err instanceof WorkflowExecutionAbortError) {
+                    throw err instanceof WorkflowExecutionAbortError
+                        ? err
+                        : new WorkflowExecutionAbortError(err);
+                }
+
                 await throwIfNavigationBlocked(page.pptrPage.browser());
                 // Don't stop on ordinary action errors, continue with next step
                 continue;
@@ -2976,7 +3133,7 @@ export const runWorkflow = definePageTool({
             return allSucceeded;
         };
 
-        await executeSteps(workflow_id, steps as WorkflowStep[], [workflow_id]);
+        await executeSteps(workflow_id, typedSteps, [workflow_id]);
 
         // Summary
         response.appendResponseLine('\n--- Execution Summary ---');
@@ -2993,7 +3150,7 @@ export const runWorkflow = definePageTool({
 
 export const simulateWorkflow = definePageTool({
     name: 'simulate_workflow',
-    description: 'Visually simulates a workflow without executing actions. Highlights target elements, moves the mouse naturally, and shows action labels so the user can preview workflow behavior.',
+    description: 'Visually simulates a workflow without executing interaction actions. Highlights target elements, moves the mouse naturally, and shows action labels; navigation steps still navigate for preview.',
     annotations: {
         category: ToolCategory.INPUT,
         readOnlyHint: true,
@@ -3002,9 +3159,14 @@ export const simulateWorkflow = definePageTool({
         workflow_id: zod.number().describe('The ID of the workflow to simulate'),
         step_order: zod.number().optional().describe('If provided, only this specific step will be simulated'),
         pause_ms: zod.number().optional().describe('Pause duration per step in milliseconds (default: 2000)'),
+        variables: zod.record(zod.string(), zod.union([zod.string(), zod.array(zod.string())])).optional().describe('Values for {{variable_name}} placeholders. Lists are supported by list_choice.'),
     },
     handler: async (request, response) => {
-        const { workflow_id, step_order, pause_ms } = request.params;
+        const { workflow_id, step_order, pause_ms, variables } = request.params;
+        const vars: Record<string, WorkflowVariable> = Object.assign(
+            Object.create(null),
+            variables || {},
+        ) as Record<string, WorkflowVariable>;
         const pauseDuration = pause_ms || 2000;
 
         // Fetch workflow steps
@@ -3095,14 +3257,68 @@ export const simulateWorkflow = definePageTool({
 
         for (const step of steps as WorkflowStep[]) {
             const actionLabel = step.description || step.action;
-            const actionValue = step.action_value || '';
+            let actionValue = step.action_value || '';
 
             response.appendUntrustedPageContent(`▶ Step ${step.step_order}: ${step.action} — ${actionLabel}`, 'workflow metadata');
 
             try {
                 const elementActions = ['click', 'type', 'hover', 'extract', 'scroll', 'upload_image'];
 
-                if (elementActions.includes(step.action) && isSelectorsData(step.selectors)) {
+                const missingPreviewVariables = getWorkflowVariableNames(actionValue).filter(
+                    name => !Object.prototype.hasOwnProperty.call(vars, name),
+                );
+                if (step.action !== 'list_choice' && actionValue && missingPreviewVariables.length === 0) {
+                    const resolvedValue = resolveWorkflowValue(actionValue, vars, false);
+                    if (Array.isArray(resolvedValue)) {
+                        throw new Error('A list variable cannot be used by this scalar simulation action.');
+                    }
+                    actionValue = resolvedValue;
+                }
+
+                if (step.action === 'list_choice') {
+                    if (!step.action_value || !isListChoiceSelectorsData(step.selectors)) {
+                        throw new Error('list_choice simulation requires an action_value and choice actions.');
+                    }
+                    const choiceActions = step.selectors.choice_actions;
+                    const available = Object.keys(choiceActions);
+                    response.appendUntrustedPageContent(
+                        `  Available list_choice options: ${available.map(key => {
+                            const option = choiceActions[key];
+                            return `${key}: ${option.action}${option.action === 'run_workflow' ? ` ${option.workflow_id}` : ''}`;
+                        }).join(', ')}`,
+                        'workflow metadata',
+                    );
+                    if (missingPreviewVariables.length > 0) {
+                        response.appendUntrustedPageContent(
+                            `  Runtime selection requires variables: ${missingPreviewVariables.join(', ')}`,
+                            'workflow metadata',
+                        );
+                        continue;
+                    }
+                    const selected = resolveListChoiceSelection(
+                        step.action_value,
+                        step.selectors,
+                        vars,
+                    );
+                    if (selected.length === 0) {
+                        response.appendResponseLine('  No list_choice options selected; nothing would run.');
+                    }
+                    for (const item of selected) {
+                        if (item.action.action === 'click') {
+                            response.appendUntrustedPageContent(
+                                `  Would click list_choice option "${item.key}" using ${item.action.selectors.best_selector}`,
+                                'page-derived selector data',
+                            );
+                        } else {
+                            response.appendUntrustedPageContent(
+                                `  Would run workflow ${item.action.workflow_id} for list_choice option "${item.key}"`,
+                                'workflow metadata',
+                            );
+                        }
+                    }
+                    await sleep(Math.min(pauseDuration, 1500));
+
+                } else if (elementActions.includes(step.action) && isSelectorsData(step.selectors)) {
                     // Find the target element
                     const result = await findElementBySelectors(
                         page,

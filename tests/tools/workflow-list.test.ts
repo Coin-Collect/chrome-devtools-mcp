@@ -19,6 +19,61 @@ import {
 } from '../../src/tools/workflowList.js';
 
 describe('workflow list helpers', () => {
+  it('includes mixed list choices and their selectors in MD and JSON summaries', () => {
+    const workflows = normalizeWorkflowRows(
+      [
+        {
+          id: 1,
+          title: 'Pizza',
+          workflow_steps: [
+            {
+              id: 1,
+              step_order: 1,
+              action: 'list_choice',
+              action_value: '{{ingredients}}',
+              selectors: {
+                choice_actions: {
+                  mushroom: {
+                    action: 'click',
+                    selectors: {
+                      best_selector: '#mushroom',
+                      strategies: [
+                        {type: 'id', value: '#mushroom', priority: 1},
+                      ],
+                    },
+                  },
+                  cheese: {action: 'run_workflow', workflow_id: 2},
+                },
+              },
+            },
+          ],
+        },
+      ],
+      {showSteps: true, showSelectorStrategies: true},
+    );
+    const page = createWorkflowListPage(workflows, {
+      total: 1,
+      offset: 0,
+      limit: 10,
+      filters: {},
+      sortBy: 'id',
+      sortOrder: 'asc',
+    });
+    const lines = formatWorkflowListLines(page).join('\n');
+    assert.match(lines, /mushroom click.*#mushroom/);
+    assert.match(lines, /cheese run_workflow: 2/);
+    const json = JSON.parse(JSON.stringify(page));
+    assert.strictEqual(
+      json.workflows[0].steps[0].selectors.choice_actions.cheese.workflow_id,
+      2,
+    );
+    assert.strictEqual(
+      json.workflows[0].steps[0].selectors.choice_actions.mushroom.selectors
+        .strategies[0].value,
+      '#mushroom',
+    );
+  });
+
   it('normalizes malformed rows and preserves selector details safely', () => {
     const rows = [
       {

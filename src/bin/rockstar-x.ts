@@ -103,7 +103,7 @@ if (
 function parseJsonObjectArg(argName: string, value: unknown): unknown {
   if (
     typeof value !== 'string' ||
-    !['choices', 'variables'].includes(argName)
+    !['choices', 'choice_actions', 'variables'].includes(argName)
   ) {
     return value;
   }

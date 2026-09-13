@@ -195,6 +195,7 @@ export const commands: Commands = {
         enum: [
           'click',
           'choice_click',
+          'list_choice',
           'type',
           'wait',
           'scroll',
@@ -220,11 +221,18 @@ export const commands: Commands = {
           'For choice_click actions, a JSON object mapping choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.',
         required: false,
       },
+      choice_actions: {
+        name: 'choice_actions',
+        type: 'string',
+        description:
+          'For list_choice actions, a JSON object mapping keys to {action:"click",uid:"..."} or {action:"run_workflow",workflow_id:2}.',
+        required: false,
+      },
       action_value: {
         name: 'action_value',
         type: 'string',
         description:
-          'The new value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)',
+          'The new value for the action; list_choice accepts a JSON string array or a whole list variable such as {{ingredients}}.',
         required: false,
       },
       step_description: {
@@ -306,6 +314,7 @@ export const commands: Commands = {
         enum: [
           'click',
           'choice_click',
+          'list_choice',
           'type',
           'wait',
           'scroll',
@@ -368,7 +377,8 @@ export const commands: Commands = {
     },
   },
   add_workflow_step: {
-    description: 'Add or insert a new step into a workflow',
+    description:
+      'Add or insert a new step into a workflow, including list_choice options',
     category: 'Workflow steps',
     args: {
       workflow_id: {
@@ -385,6 +395,7 @@ export const commands: Commands = {
         enum: [
           'click',
           'choice_click',
+          'list_choice',
           'type',
           'wait',
           'scroll',
@@ -410,11 +421,18 @@ export const commands: Commands = {
           'For choice_click actions, a JSON object mapping choice keys to element uids. Example: {"basic":"uid-1","pro":"uid-2"}.',
         required: false,
       },
+      choice_actions: {
+        name: 'choice_actions',
+        type: 'string',
+        description:
+          'For list_choice actions, a JSON object mapping keys to {action:"click",uid:"..."} or {action:"run_workflow",workflow_id:2}.',
+        required: false,
+      },
       action_value: {
         name: 'action_value',
         type: 'string',
         description:
-          'Value for the action (e.g., text to type, wait duration, URL for nav, target workflow ID for run_workflow, URL for upload image, or choice key/template for choice_click)',
+          'Value for the action; list_choice accepts a JSON string array or a whole list variable such as {{ingredients}}.',
         required: false,
       },
       step_description: {
@@ -440,7 +458,8 @@ export const commands: Commands = {
     },
   },
   run_workflow: {
-    description: 'Run a workflow or one selected step',
+    description:
+      'Run a workflow or one selected step with string or list variables',
     category: 'Workflow execution',
     args: {
       workflow_id: {
@@ -459,13 +478,13 @@ export const commands: Commands = {
         name: 'variables',
         type: 'string',
         description:
-          'Key-value pairs to resolve {{variable_name}} placeholders in action_value fields. Example: {"username": "john", "password": "secret"}',
+          'Key-value pairs for templates. Values may be strings or string arrays, for example {"username":"john","ingredients":["mushroom","cheese"]}.',
         required: false,
       },
     },
   },
   simulate_workflow: {
-    description: 'Preview workflow actions without executing them',
+    description: 'Preview workflow actions, including list_choice selections',
     category: 'Workflow execution',
     args: {
       workflow_id: {
@@ -484,6 +503,13 @@ export const commands: Commands = {
         name: 'pause_ms',
         type: 'number',
         description: 'Pause duration per step in milliseconds (default: 2000)',
+        required: false,
+      },
+      variables: {
+        name: 'variables',
+        type: 'string',
+        description:
+          'Values for templates; lists are supported by list_choice.',
         required: false,
       },
     },

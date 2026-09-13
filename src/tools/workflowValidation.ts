@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type {ChoiceActionDefinition} from './workflowTypes.js';
+
 const VARIABLE_TEMPLATE_PATTERN = /^\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}$/;
 
 const ELEMENT_REQUIRED_ACTIONS = new Set([
@@ -20,6 +22,9 @@ export interface WorkflowStepValidationInput {
   actionValue?: string;
   uid?: string;
   choices?: Record<string, string>;
+  choiceActions?: Record<string, ChoiceActionDefinition>;
+  existingSelectorShape?: 'element' | 'choice' | 'list_choice';
+  existingChoiceKeys?: string[];
 }
 
 export function isVariableTemplate(value: string): boolean {
@@ -36,6 +41,52 @@ export function parseWorkflowId(value: unknown): number {
   throw new Error(
     'run_workflow action_value must resolve to a positive integer workflow ID',
   );
+}
+
+function validateChoiceActionDefinitions(
+  action: string,
+  choiceActions: Record<string, ChoiceActionDefinition>,
+): void {
+  const normalizedKeys = new Set<string>();
+  for (const [choiceKey, choiceAction] of Object.entries(choiceActions)) {
+    if (choiceKey.trim() === '' || choiceKey !== choiceKey.trim()) {
+      throw new Error(
+        `Action "${action}" received an invalid choice key. Keys must not be empty or padded with whitespace.`,
+      );
+    }
+    const normalizedKey = choiceKey.toLowerCase();
+    if (normalizedKeys.has(normalizedKey)) {
+      throw new Error(
+        `Action "${action}" received case-colliding choice key "${choiceKey}".`,
+      );
+    }
+    normalizedKeys.add(normalizedKey);
+
+    if (choiceAction?.action === 'click') {
+      if (
+        typeof choiceAction.uid !== 'string' ||
+        choiceAction.uid.trim() === ''
+      ) {
+        throw new Error(
+          `Action "${action}" requires a uid for choice "${choiceKey}".`,
+        );
+      }
+      continue;
+    }
+
+    if (
+      choiceAction?.action === 'run_workflow' &&
+      typeof choiceAction.workflow_id === 'number' &&
+      Number.isSafeInteger(choiceAction.workflow_id) &&
+      choiceAction.workflow_id > 0
+    ) {
+      continue;
+    }
+
+    throw new Error(
+      `Action "${action}" received an invalid action for choice "${choiceKey}". Use {action:"click",uid:string} or {action:"run_workflow",workflow_id:positive integer}.`,
+    );
+  }
 }
 
 function requireActionValue(
@@ -107,23 +158,40 @@ export function validateWorkflowStepDefinition({
   actionValue,
   uid,
   choices,
+  choiceActions,
+  existingSelectorShape,
+  existingChoiceKeys,
 }: WorkflowStepValidationInput): void {
   const normalizedUid = uid?.trim();
 
+  if (uid !== undefined && !normalizedUid) {
+    throw new Error('The uid parameter cannot be empty.');
+  }
+
   if (action === 'choice_click') {
+    if (choiceActions !== undefined) {
+      throw new Error(
+        'The choice_actions parameter can only be used with action "list_choice".',
+      );
+    }
     if (uid !== undefined) {
       throw new Error(
         'The uid parameter cannot be used with action "choice_click"; provide one uid per choice in choices.',
       );
     }
-    if (!choices || Object.keys(choices).length === 0) {
+    if (
+      (choices !== undefined && Object.keys(choices).length === 0) ||
+      (choices === undefined && existingSelectorShape !== 'choice')
+    ) {
       throw new Error(
         'Action "choice_click" requires a choices parameter mapping choice keys to element uids.',
       );
     }
 
-    const choiceKeys = Object.keys(choices);
-    for (const [choiceKey, choiceUid] of Object.entries(choices)) {
+    const choiceKeys = choices
+      ? Object.keys(choices)
+      : (existingChoiceKeys ?? []);
+    for (const [choiceKey, choiceUid] of Object.entries(choices ?? {})) {
       if (choiceKey.trim() === '' || choiceKey !== choiceKey.trim()) {
         throw new Error(
           'Action "choice_click" received an invalid choice key. Keys must not be empty or padded with whitespace.',
@@ -150,13 +218,49 @@ export function validateWorkflowStepDefinition({
     return;
   }
 
+  if (action === 'list_choice') {
+    if (uid !== undefined) {
+      throw new Error(
+        'The uid parameter cannot be used with action "list_choice"; provide one action per choice in choice_actions.',
+      );
+    }
+    if (choices !== undefined) {
+      throw new Error(
+        'The choices parameter can only be used with action "choice_click".',
+      );
+    }
+    if (
+      (choiceActions !== undefined &&
+        Object.keys(choiceActions).length === 0) ||
+      (choiceActions === undefined && existingSelectorShape !== 'list_choice')
+    ) {
+      throw new Error(
+        'Action "list_choice" requires a choice_actions parameter mapping choice keys to click or run_workflow actions.',
+      );
+    }
+    if (choiceActions) {
+      validateChoiceActionDefinitions(action, choiceActions);
+    }
+    requireActionValue(action, actionValue);
+    return;
+  }
+
   if (choices !== undefined) {
     throw new Error(
       `The choices parameter can only be used with action "choice_click".`,
     );
   }
+  if (choiceActions !== undefined) {
+    throw new Error(
+      `The choice_actions parameter can only be used with action "list_choice".`,
+    );
+  }
 
-  if (ELEMENT_REQUIRED_ACTIONS.has(action) && !normalizedUid) {
+  if (
+    ELEMENT_REQUIRED_ACTIONS.has(action) &&
+    !normalizedUid &&
+    existingSelectorShape !== 'element'
+  ) {
     throw new Error(
       `Action "${action}" requires a uid parameter to identify the target element.`,
     );

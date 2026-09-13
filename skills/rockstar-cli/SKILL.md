@@ -98,13 +98,14 @@ rockstar update_workflow_step 1 3 --action_value "{{plan}}"                 # Up
 rockstar delete_workflow_step 1 3                                           # Delete step 3 and reorder later steps
 ```
 
-`list_workflows` reads workflow data directly and does not start the daemon. When `--show_steps` is enabled, each step includes its action value, description, selector, and selector strategy count. `choice_click` steps also list their available choice keys. Add `--show_selector_strategies` to include every strategy, iframe selector, and target signature. JSON output contains `workflows`, `total`, `summary`, `filters`, and pagination fields.
+`list_workflows` reads workflow data directly and does not start the daemon. When `--show_steps` is enabled, each step includes its action value, description, selector, and selector strategy count. `choice_click` steps also list their available choice keys. `list_choice` steps list each option's action type, click selectors or target workflow ID. Add `--show_selector_strategies` to include every strategy, iframe selector, and target signature. JSON output contains `workflows`, `total`, `summary`, `filters`, and pagination fields.
 
 ### Adding Steps to a Workflow
 
 ```bash
 rockstar add_workflow_step 1 click --uid "1_5"                               # Add a click step
 rockstar add_workflow_step 1 choice_click --choices '{"basic":"1_5","pro":"1_6"}' --action_value "{{plan}}"  # Add a runtime-selected click step
+rockstar add_workflow_step 1 list_choice --choice_actions '{"mushroom":{"action":"click","uid":"1_5"},"cheese":{"action":"run_workflow","workflow_id":2}}' --action_value '{{ingredients}}'  # Select pizza ingredients at runtime
 rockstar add_workflow_step 1 type --uid "1_6" --action_value "{{username}}"   # Add a type step with variable
 rockstar add_workflow_step 1 wait --action_value "2000"                       # Add a wait step (2000ms)
 rockstar add_workflow_step 1 nav --action_value "https://example.com"         # Add a navigation step
@@ -123,7 +124,11 @@ rockstar add_workflow_step 1 type --uid "1_6" --action_value "text" --step_descr
 
 `add_workflow_step` only adds new steps. Use `update_workflow_step` to modify an existing step; use `--insert_at` to add before an existing step and shift later steps. `--step_order` and `--insert_at` cannot be used together.
 
-Supported actions: `click`, `choice_click`, `type`, `wait`, `scroll`, `nav`, `hover`, `extract`, `screenshot`, `upload_image`, `run_workflow`
+Supported actions: `click`, `choice_click`, `list_choice`, `type`, `wait`, `scroll`, `nav`, `hover`, `extract`, `screenshot`, `upload_image`, `run_workflow`
+
+`list_choice` uses `choice_actions` so each option is either `{ "action": "click", "uid": "..." }` or `{ "action": "run_workflow", "workflow_id": 2 }`. Its `action_value` is a JSON string array or a whole list variable such as `{{ingredients}}`; a scalar key is accepted when it identifies one option. Options execute in list order, and an empty list does nothing.
+
+Unknown or duplicate choices (case-insensitive) are rejected before any selected option runs. If any option or its nested workflow fails, the remaining options and outer workflow stop. Already completed actions are not rolled back. Child workflows inherit variables and selected-page changes. Use `update_workflow_step --choice_actions` to replace option definitions, or `--action_value` alone to keep the saved targets.
 
 `upload_image` accepts only HTTPS images from domains in `~/rockstarx/whitelist.json`; redirect targets must also be allowlisted. PNG, JPEG, WebP, and GIF files up to 10 MB are supported.
 
@@ -133,13 +138,15 @@ Supported actions: `click`, `choice_click`, `type`, `wait`, `scroll`, `nav`, `ho
 rockstar run_workflow 1                                                      # Run all steps of workflow 1
 rockstar run_workflow 1 --step_order 3                                       # Run only step 3
 rockstar run_workflow 1 --variables '{"username":"john","password":"secret"}' # Run with template variables
+rockstar run_workflow 1 --variables '{"ingredients":["mushroom","cheese"]}' # Run selected click and nested workflow options
 rockstar run_workflow 1 --response-timeout 600000                            # Allow up to 10 minutes for a long workflow
 rockstar simulate_workflow 1                                                 # Preview workflow without executing
 rockstar simulate_workflow 1 --pause_ms 3000                                 # Simulate with custom pause per step
 rockstar simulate_workflow 1 --step_order 2                                  # Simulate only step 2
+rockstar simulate_workflow 1 --variables '{"ingredients":["mushroom","cheese"]}' # Preview list_choice selection
 ```
 
-Template variables use `{{variable_name}}` syntax in `action_value` fields and are resolved at runtime via the `--variables` flag.
+Template variables use `{{variable_name}}` syntax in `action_value` fields and are resolved at runtime via the `--variables` flag. Values may be strings or string arrays; arrays are valid only as a whole `list_choice` value and are rejected by scalar actions.
 The `--response-timeout` value applies to both the daemon connection and the underlying MCP tool request; use `0` to disable the practical timeout.
 For `choice_click`, store multiple targets with `--choices` and set `--action_value` to either a literal choice key or a template such as `{{plan}}`; then run with `--variables '{"plan":"pro"}'`.
 
