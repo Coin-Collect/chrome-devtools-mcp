@@ -50,6 +50,7 @@ import {
     validateWorkflowRuntimeVariables,
 } from './workflowRuntime.js';
 import type { SelectorStrategy } from './workflowSelectors.js';
+import { ensureWhitelistedPage, runAndCapturePopup } from './workflowPopup.js';
 import {
     pickBestFrameSelector,
     resolveFrame,
@@ -2364,62 +2365,6 @@ async function withPulseFrame<T>(page: Page, actionFn: () => Promise<T>): Promis
     }
 }
 
-async function runAndCapturePopup(
-    page: Page,
-    actionFn: () => Promise<void>,
-    timeout = 1_000,
-): Promise<Page | undefined> {
-    let popupPage: Page | undefined;
-    let resolvePopup: (page: Page) => void;
-    const popupPromise = new Promise<Page>((resolve) => {
-        resolvePopup = resolve;
-    });
-    const onPopup = (popup: Page | null) => {
-        if (!popup) {
-            return;
-        }
-        popupPage = popup;
-        resolvePopup(popup);
-    };
-
-    page.on('popup', onPopup);
-    try {
-        await actionFn();
-        if (popupPage) {
-            return popupPage;
-        }
-        return await Promise.race([
-            popupPromise,
-            sleep(timeout).then(() => undefined),
-        ]);
-    } finally {
-        page.off('popup', onPopup);
-    }
-}
-
-async function ensureWhitelistedPage(
-    page: Page,
-    waitForInitialNavigation = false,
-): Promise<void> {
-    await throwIfNavigationBlocked(page.browser());
-    if (waitForInitialNavigation && page.url() === 'about:blank') {
-        try {
-            await page.waitForNavigation({
-                waitUntil: 'domcontentloaded',
-                timeout: 5_000,
-            });
-        } catch {
-            // A popup can intentionally remain blank until a later action.
-        }
-    }
-
-    if (page.url() === 'about:blank') {
-        return;
-    }
-
-    await checkNavigationSecurity(page.url());
-}
-
 async function ensureWhitelistedFrame(page: Page, frame: Frame): Promise<void> {
     let current: Frame | null = frame;
     const visited = new Set<Frame>();
@@ -3508,7 +3453,7 @@ export const simulateWorkflow = definePageTool({
 
 export const clickLikeHuman = definePageTool({
     name: 'click_like_human',
-    description: 'Clicks on an element with fully realistic human behavior: scrolls into view using mouse wheel with momentum, moves the cursor along a natural Bezier curve path, hovers briefly, then performs a mousedown/mouseup with natural hold timing. A symbolic cursor is displayed during the interaction. NOTE: Unless otherwise specified, prefer this tool over the standard click tool.',
+    description: 'Clicks on an element with fully realistic human behavior: scrolls into view using mouse wheel with momentum, moves the cursor along a natural Bezier curve path, hovers briefly, then performs a mousedown/mouseup with natural hold timing. A symbolic cursor is displayed during the interaction. Newly opened tabs are selected only after passing security checks. NOTE: Unless otherwise specified, prefer this tool over the standard click tool.',
     annotations: {
         category: ToolCategory.INPUT,
         readOnlyHint: false,
@@ -3564,6 +3509,7 @@ export const clickLikeHuman = definePageTool({
                 await ensureWhitelistedPage(popupPage, true);
                 const selectedPage = await context.selectPptrPage(popupPage);
                 await injectSymbolicCursor(selectedPage.pptrPage);
+                response.setIncludePages(true);
                 response.appendResponseLine('Selected newly opened page.');
             } else {
                 await ensureWhitelistedPage(page.pptrPage);
